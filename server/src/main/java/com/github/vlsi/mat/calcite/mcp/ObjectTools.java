@@ -128,19 +128,30 @@ final class ObjectTools {
         renderer, cancellation);
   }
 
-  static String retainedSet(ISnapshot snapshot, String addresses, MatResultRenderer renderer,
-                            Cancellation cancellation) throws Exception {
+  /** @param excludedReferences class:field references not to follow (java.lang.ref.Reference:referent), or empty */
+  static String retainedSet(ISnapshot snapshot, String addresses, String excludedReferences,
+                            MatResultRenderer renderer, Cancellation cancellation) throws Exception {
+    if (excludedReferences != null && !excludedReferences.trim().isEmpty()) {
+      return MatCommandTools.retainedSetWithout(snapshot, addresses, excludedReferences, renderer, cancellation);
+    }
     return run(snapshot, "show_retained_set " + addressArgs(snapshot, addresses), renderer, cancellation);
   }
 
-  static String pathToGcRoots(ISnapshot snapshot, String address, int paths, MatResultRenderer renderer,
-                              Cancellation cancellation) throws Exception {
+  /**
+   * @param includeWeakRefs also follow weak, soft, phantom and finalizer references, which MAT ignores by default
+   */
+  static String pathToGcRoots(ISnapshot snapshot, String address, int paths, boolean includeWeakRefs,
+                              MatResultRenderer renderer, Cancellation cancellation) throws Exception {
     int[] ids = objectIds(snapshot, address);
     if (ids.length != 1) {
       throw new ToolException("path_to_gc_roots takes one address, got " + ids.length);
     }
-    return run(snapshot, "path2gc -numberOfPaths " + paths + " " + toAddress(snapshot, ids[0]), renderer,
-        cancellation);
+    String result = run(snapshot, "path2gc -numberOfPaths " + paths + " " + toAddress(snapshot, ids[0])
+        + (includeWeakRefs ? " -excludes" : ""), renderer, cancellation);
+    // MAT shows just the object when no path remains once weak references are ignored; a GC root looks the same
+    return includeWeakRefs || !result.endsWith("\n1 row") ? result : result
+        + "\n\nOnly the object itself: either it is a GC root, or only weak, soft, phantom or finalizer references "
+        + "reach it, which are ignored by default. Retry with include_weak_refs true to see how it is reachable.";
   }
 
   /**
@@ -162,6 +173,58 @@ final class ObjectTools {
         cancellation);
   }
 
+  /** The values of dominator_tree's group_by, as MAT's -groupBy names. */
+  private static final String[][] DOMINATOR_GROUPINGS = {
+      {"none", "NONE"}, {"class", "BY_CLASS"}, {"class_loader", "BY_CLASSLOADER"}, {"package", "BY_PACKAGE"}};
+
+  /**
+   * "dominator_tree": the objects that keep the most memory alive, as MAT's dominator tree. With an address, what that
+   * one object dominates; otherwise the whole heap, either as single objects or summed by class, class loader or
+   * package.
+   */
+  static String dominatorTree(ISnapshot snapshot, String address, String groupBy, MatResultRenderer renderer,
+                              Cancellation cancellation) throws Exception {
+    boolean hasAddress = address != null && !address.trim().isEmpty();
+    boolean hasGrouping = groupBy != null && !groupBy.trim().isEmpty();
+    if (hasAddress) {
+      if (hasGrouping) {
+        throw new ToolException("address and group_by cannot be combined: group_by summarizes the whole heap, "
+            + "address shows what one object dominates");
+      }
+      return run(snapshot, "show_dominator_tree " + addressArgs(snapshot, address), renderer, cancellation);
+    }
+    String grouping = null;
+    String wanted = hasGrouping ? groupBy.trim().toLowerCase(java.util.Locale.ROOT) : "none";
+    for (String[] option : DOMINATOR_GROUPINGS) {
+      if (option[0].equals(wanted)) {
+        grouping = option[1];
+      }
+    }
+    if (grouping == null) {
+      throw new ToolException("group_by must be none, class, class_loader or package, got " + groupBy);
+    }
+    return run(snapshot, "dominator_tree -groupBy " + grouping, renderer, cancellation);
+  }
+
+  /**
+   * "threads": all threads with state and retained heap, largest first (thread_overview; the renderer's depth decides
+   * whether the stack frames show), or the details of the given threads (thread_details).
+   */
+  static String threads(ISnapshot snapshot, String addresses, MatResultRenderer renderer, Cancellation cancellation)
+      throws Exception {
+    if (addresses == null || addresses.trim().isEmpty()) {
+      return run(snapshot, "thread_overview", renderer.sortedBy("Retained Heap"), cancellation);
+    }
+    for (int id : objectIds(snapshot, addresses)) {
+      IObject object = snapshot.getObject(id);
+      if (!(object instanceof IInstance) || !object.getClazz().doesExtend("java.lang.Thread")) {
+        throw new ToolException(object.getDisplayName() + " is not a thread. Call threads without address to list "
+            + "the threads, or use sql_query on instanceof.\"java.lang.Thread\".");
+      }
+    }
+    return run(snapshot, "thread_details " + addressArgs(snapshot, addresses), renderer, cancellation);
+  }
+
   /**
    * Any MAT command line, e.g. "histogram" or "find_leaks", except commands that write files or run reports: the
    * assistant also reads heap contents, which may hold text written to steer it, so it must not get a way to write
@@ -170,6 +233,15 @@ final class ObjectTools {
    */
   static String matQuery(ISnapshot snapshot, String command, MatResultRenderer renderer, Cancellation cancellation)
       throws Exception {
+    checkAllowed(command, snapshot);
+    return run(snapshot, command, renderer, cancellation);
+  }
+
+  /**
+   * Refuses MAT commands that write files, run reports or open other dumps. Applies to {@code mat_query} and to the
+   * commands that MAT's own report results name.
+   */
+  static void checkAllowed(String command, ISnapshot snapshot) throws ToolException {
     String name = command.trim().split("\\s+", 2)[0];
     if (REPORT_COMMANDS.contains(name)) {
       throw new ToolException(name + " runs a MAT report, which writes files; mat_query does not run reports. Use "
@@ -192,20 +264,19 @@ final class ObjectTools {
             + "mat_query does not allow. Use export_query to write a CSV, compare_dumps to compare dumps.");
       }
     }
-    return run(snapshot, command, renderer, cancellation);
   }
 
   /** Commands that run report definitions: they write their output to files and run any query they list. */
   private static final Set<String> REPORT_COMMANDS = new HashSet<>(Arrays.asList("create_report", "default_report"));
 
-  private static String run(ISnapshot snapshot, String commandLine, MatResultRenderer renderer,
+  static String run(ISnapshot snapshot, String commandLine, MatResultRenderer renderer,
                             Cancellation cancellation) throws Exception {
     IResult result = SnapshotQuery.parse(commandLine, snapshot).execute(cancellation.listener());
-    return renderer.render(snapshot, result);
+    return renderer.withListener(cancellation.listener()).render(snapshot, result);
   }
 
   /** Addresses checked against the dump and formatted for a MAT command line. */
-  private static String addressArgs(ISnapshot snapshot, String addresses) throws Exception {
+  static String addressArgs(ISnapshot snapshot, String addresses) throws Exception {
     StringBuilder sb = new StringBuilder();
     for (int id : objectIds(snapshot, addresses)) {
       sb.append(sb.length() == 0 ? "" : " ").append(toAddress(snapshot, id));

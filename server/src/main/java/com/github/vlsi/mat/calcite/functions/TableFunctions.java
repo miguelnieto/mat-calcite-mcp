@@ -48,6 +48,7 @@ public class TableFunctions {
     builder.put("getRetainedSet", TableFunctionImpl.create(TableFunctions.class, "getRetainedSet"));
     builder.put("getOutboundReferences", TableFunctionImpl.create(TableFunctions.class, "getOutboundReferences"));
     builder.put("getInboundReferences", TableFunctionImpl.create(TableFunctions.class, "getInboundReferences"));
+    builder.put("getDominatedObjects", TableFunctionImpl.create(TableFunctions.class, "getDominatedObjects"));
     return builder.build();
   }
 
@@ -149,6 +150,24 @@ public class TableFunctions {
             );
       } catch (SnapshotException e) {
         throw new RuntimeException("Cannot extract inbound references from " + r, e);
+      }
+    }
+    return new HeapReferenceTable(references, true);
+  }
+
+  /** The objects the given object immediately dominates: its children in the dominator tree. */
+  @SuppressWarnings("unused")
+  public static QueryableTable getDominatedObjects(Object r) {
+    List<HeapReference> references;
+    if (!(r instanceof HeapReference)) {
+      references = Collections.emptyList();
+    } else {
+      HeapReference ref = (HeapReference) r;
+      ISnapshot snapshot = ref.getIObject().getSnapshot();
+      try {
+        references = collectReferences(snapshot, snapshot.getImmediateDominatedIds(ref.getIObject().getObjectId()));
+      } catch (SnapshotException e) {
+        throw new RuntimeException("Cannot extract dominated objects of " + r, e);
       }
     }
     return new HeapReferenceTable(references, true);

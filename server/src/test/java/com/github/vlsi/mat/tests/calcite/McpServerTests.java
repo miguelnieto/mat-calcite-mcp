@@ -67,7 +67,7 @@ public class McpServerTests {
   public void toolsAreListed() {
     Map<?, ?> result = (Map<?, ?>) request("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}").get("result");
     List<?> tools = (List<?>) result.get("tools");
-    Assert.assertEquals(23, tools.size());
+    Assert.assertEquals(37, tools.size());
     Assert.assertTrue(String.valueOf(tools), String.valueOf(tools).contains("\"sql_query\"")
         || String.valueOf(tools).contains("name=sql_query"));
   }
@@ -149,6 +149,309 @@ public class McpServerTests {
     String paths = okText(callTool("path_to_gc_roots", "{\"address\":\"" + biggestHashMap() + "\"}"));
     Assert.assertTrue(paths, paths.contains("java.util.HashMap @ 0x"));
     Assert.assertTrue(paths, paths.split("\n").length > 3);
+  }
+
+  @Test
+  public void dominatorTreeOfTheWholeHeap() {
+    openDump();
+    String tree = okText(callTool("dominator_tree", "{\"max_rows\":5}"));
+    Assert.assertTrue(tree, tree.startsWith("Class Name | Shallow Heap | Retained Heap | Percentage"));
+    Assert.assertTrue(tree, tree.contains("%"));
+    Assert.assertTrue(tree, tree.contains(" @ 0x"));
+    // the biggest object first
+    String[] lines = tree.split("\n");
+    long first = Long.parseLong(lines[1].split("\\|")[2].trim().replace(",", ""));
+    long second = Long.parseLong(lines[2].split("\\|")[2].trim().replace(",", ""));
+    Assert.assertTrue(tree, first >= second || lines[2].startsWith("  "));
+  }
+
+  @Test
+  public void dominatorTreeGroupedByClassLoaderAndPackage() {
+    openDump();
+    String byClass = okText(callTool("dominator_tree", "{\"group_by\":\"class\",\"max_rows\":5}"));
+    Assert.assertTrue(byClass, byClass.startsWith("Class Name | Objects | Shallow Heap | Retained Heap"));
+    Assert.assertFalse(byClass, byClass.contains(" @ 0x"));
+    String byLoader = okText(callTool("dominator_tree", "{\"group_by\":\"class_loader\",\"max_rows\":5}"));
+    Assert.assertTrue(byLoader, byLoader.startsWith("Class Loader Name | Objects"));
+    String byPackage = okText(callTool("dominator_tree", "{\"group_by\":\"package\",\"max_rows\":5}"));
+    Assert.assertTrue(byPackage, byPackage.contains("java"));
+  }
+
+  @Test
+  public void dominatorTreeOfOneObject() {
+    String tree = okText(callTool("dominator_tree", "{\"address\":\"" + biggestHashMap() + "\",\"depth\":2}"));
+    Assert.assertTrue(tree, tree.contains("java.util.HashMap @ 0x"));
+    Assert.assertTrue(tree, tree.contains("\n  table "));
+  }
+
+  @Test
+  public void dominatorTreeRejectsBadArguments() {
+    openDump();
+    Map<?, ?> bad = callTool("dominator_tree", "{\"group_by\":\"bogus\"}");
+    Assert.assertEquals(Boolean.TRUE, bad.get("isError"));
+    Assert.assertTrue(text(bad), text(bad).contains("none, class, class_loader or package"));
+    Map<?, ?> both = callTool("dominator_tree", "{\"group_by\":\"class\",\"address\":\"" + biggestHashMap() + "\"}");
+    Assert.assertEquals(Boolean.TRUE, both.get("isError"));
+    Assert.assertTrue(text(both), text(both).contains("cannot be combined"));
+  }
+
+  /** Decimal address of a thread object. */
+  private static String someThread() {
+    openDump();
+    String rows = text(callTool("sql_query", "{\"sql\":\"select getAddress(this) a from "
+        + "instanceof.\\\"java.lang.Thread\\\" order by retainedSize(this) desc limit 1\"}"));
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\| (\\d+) \\|").matcher(rows);
+    Assert.assertTrue(rows, m.find());
+    return m.group(1);
+  }
+
+  @Test
+  public void threadsAreListedWithTheirState() {
+    openDump();
+    String threads = okText(callTool("threads", "{}"));
+    Assert.assertTrue(threads, threads.startsWith("Object / Stack Frame | Name | Shallow Heap | Retained Heap"));
+    Assert.assertTrue(threads, threads.contains("Is Daemon"));
+    Assert.assertTrue(threads, threads.contains("java.lang.Thread @ 0x"));
+    // no stack frames unless asked for
+    Assert.assertFalse(threads, threads.contains("\n  at "));
+    String withStacks = okText(callTool("threads", "{\"include_stacks\":true,\"max_frames\":2}"));
+    Assert.assertTrue(withStacks, withStacks.contains("\n  at "));
+  }
+
+  @Test
+  public void threadDetails() {
+    String details = okText(callTool("threads", "{\"address\":\"" + someThread() + "\"}"));
+    Assert.assertTrue(details, details.contains("## Thread Details"));
+    Assert.assertTrue(details, details.contains("Thread Properties"));
+    Assert.assertTrue(details, details.contains("| Is Daemon |"));
+    Assert.assertFalse(details, details.contains("ThreadInfoQuery"));
+  }
+
+  @Test
+  public void threadDetailsRefuseAnObjectThatIsNoThread() {
+    Map<?, ?> result = callTool("threads", "{\"address\":\"" + biggestHashMap() + "\"}");
+    Assert.assertEquals(Boolean.TRUE, result.get("isError"));
+    Assert.assertTrue(text(result), text(result).contains("is not a thread"));
+  }
+
+  @Test
+  public void reportResultsAreRenderedAsText() {
+    openDump();
+    // These MAT commands return report trees, which used to come back as "SectionSpec: ...@1a2b3c"
+    for (String command : new String[] {"finalizer_overview", "weak_references_statistics", "leakhunter"}) {
+      String text = okText(callTool("mat_query", "{\"command\":\"" + command + "\",\"max_rows\":30}"));
+      Assert.assertTrue(command + ": " + text, text.startsWith("##") || text.startsWith("#"));
+      Assert.assertFalse(command + ": " + text, text.contains("@") && text.matches("(?s).*(Spec|Result)[:@].*@[0-9a-f]{6,}.*"));
+      Assert.assertFalse(command + ": " + text, text.contains("<p>") || text.contains("<strong>"));
+    }
+  }
+
+  private static void assertToolError(String tool, String arguments, String expectedMessagePart) {
+    openDump();
+    Map<?, ?> result = callTool(tool, arguments);
+    Assert.assertEquals(text(result), Boolean.TRUE, result.get("isError"));
+    Assert.assertTrue(text(result), text(result).contains(expectedMessagePart));
+  }
+
+  @Test
+  public void histogramCanBeGrouped() {
+    openDump();
+    String byPackage = okText(callTool("histogram", "{\"group_by\":\"package\",\"max_rows\":50}"));
+    Assert.assertTrue(byPackage, byPackage.contains("groups by package"));
+    Assert.assertTrue(byPackage, byPackage.contains("| package | classes | objects | shallow heap |"));
+    Assert.assertTrue(byPackage, byPackage.contains("| java.lang |"));
+    String bySuper = okText(callTool("histogram", "{\"group_by\":\"superclass\",\"sort_by\":\"objects\"}"));
+    Assert.assertTrue(bySuper, bySuper.contains("| java.lang.Object |"));
+    String byLoader = okText(callTool("histogram", "{\"group_by\":\"class_loader\"}"));
+    Assert.assertTrue(byLoader, byLoader.contains("<system class loader>"));
+    String filtered = okText(callTool("histogram", "{\"group_by\":\"package\",\"filter\":\"HashMap\"}"));
+    Assert.assertTrue(filtered, filtered.contains("| java.util |"));
+    Assert.assertFalse(filtered, filtered.contains("| java.lang |"));
+    // the classes themselves are unchanged
+    Assert.assertTrue(okText(callTool("histogram", "{\"max_rows\":2}")).contains("| class | objects | shallow heap |"));
+  }
+
+  @Test
+  public void histogramGroupingRejectsBadArguments() {
+    assertToolError("histogram", "{\"group_by\":\"package\",\"sort_by\":\"retained\"}", "only available with group_by class");
+    assertToolError("histogram", "{\"group_by\":\"x\"}", "group_by must be class, package, superclass or class_loader");
+  }
+
+  @Test
+  public void mergedPathsToGcRoots() {
+    String byAddress = okText(callTool("merge_paths_to_gc_roots", "{\"address\":\"" + biggestHashMap() + "\"}"));
+    Assert.assertTrue(byAddress, byAddress.contains("java.util.HashMap @ 0x"));
+    String byClass = okText(callTool("merge_paths_to_gc_roots", "{\"class_regex\":\"java\\\\.util\\\\.Properties\","
+        + "\"group_by\":\"from_gc_roots_by_class\"}"));
+    Assert.assertTrue(byClass, byClass.contains("java.util.Properties"));
+    String withWeak = okText(callTool("merge_paths_to_gc_roots", "{\"address\":\"" + biggestHashMap()
+        + "\",\"include_weak_refs\":true}"));
+    Assert.assertTrue(withWeak, withWeak.contains("java.util.HashMap @ 0x"));
+  }
+
+  @Test
+  public void mergedPathsRejectBadArguments() {
+    assertToolError("merge_paths_to_gc_roots", "{}", "either address");
+    assertToolError("merge_paths_to_gc_roots", "{\"address\":\"0x1\",\"class_regex\":\"a\"}", "either address");
+    assertToolError("merge_paths_to_gc_roots", "{\"class_regex\":\"java.lang.String -output /tmp/x\"}",
+        "must not contain spaces or quotes");
+    assertToolError("merge_paths_to_gc_roots", "{\"class_regex\":\"-output\"}", "must not start with a dash");
+    assertToolError("merge_paths_to_gc_roots", "{\"class_regex\":\"java.util.(Hash\"}", "not a valid regular expression");
+    assertToolError("merge_paths_to_gc_roots", "{\"class_regex\":\"a\",\"group_by\":\"x\"}", "group_by must be");
+  }
+
+  @Test
+  public void pathToGcRootsCanFollowWeakReferences() {
+    String paths = okText(callTool("path_to_gc_roots", "{\"address\":\"" + biggestHashMap()
+        + "\",\"include_weak_refs\":true}"));
+    Assert.assertTrue(paths, paths.contains("java.util.HashMap @ 0x"));
+  }
+
+  @Test
+  public void retainedSetCanIgnoreReferences() {
+    String address = biggestHashMap();
+    String plain = okText(callTool("retained_set", "{\"address\":\"" + address + "\"}"));
+    String without = okText(callTool("retained_set", "{\"address\":\"" + address
+        + "\",\"excluded_references\":\"java.lang.ref.Reference:referent\"}"));
+    Assert.assertTrue(without, without.contains("| Class Name | Objects | Shallow Heap |"));
+    Assert.assertTrue(without, without.contains("java.util.HashMap$Node"));
+    Assert.assertTrue(plain, plain.contains("java.util.HashMap$Node"));
+    assertToolError("retained_set", "{\"address\":\"" + address + "\",\"excluded_references\":\"a:b -xfile /tmp/x\"}",
+        "excluded_references must be class:field");
+    assertToolError("retained_set", "{\"address\":\"" + address + "\",\"excluded_references\":\"nocolon\"}",
+        "excluded_references must be class:field");
+  }
+
+  @Test
+  public void matQueryStillRefusesTheFileOptionOfTheCustomizedRetainedSet() {
+    String address = biggestHashMap();
+    assertToolError("mat_query", "{\"command\":\"customized_retained_set " + address + " -xfile /tmp/x\"}",
+        "reads or writes files");
+  }
+
+  @Test
+  public void gcRootsAndClassReferences() {
+    openDump();
+    String roots = okText(callTool("gc_roots", "{\"max_rows\":20}"));
+    Assert.assertTrue(roots, roots.startsWith("Class Name | Objects"));
+    Assert.assertTrue(roots, roots.contains("System Class"));
+    String incoming = okText(callTool("class_references", "{\"class_regex\":\"java\\\\.util\\\\.HashMap\"}"));
+    Assert.assertTrue(incoming, incoming.startsWith("Class Name | Objects | Shallow Heap"));
+    Assert.assertTrue(incoming, incoming.contains("java.util.HashMap"));
+    String outgoing = okText(callTool("class_references", "{\"class_regex\":\"java\\\\.util\\\\.HashMap\","
+        + "\"direction\":\"outgoing\"}"));
+    Assert.assertTrue(outgoing, outgoing.contains("java.util.HashMap"));
+    assertToolError("class_references", "{\"class_regex\":\"a\",\"direction\":\"x\"}", "direction must be");
+    assertToolError("class_references", "{}", "Missing argument: class_regex");
+  }
+
+  @Test
+  public void bigDropsAndUnreachableObjects() {
+    openDump();
+    String drops = okText(callTool("big_drops", "{\"max_rows\":10}"));
+    Assert.assertTrue(drops, drops.startsWith("Accumulation Point | Acc.Pt. Size"));
+    String dropsAll = okText(callTool("big_drops", "{\"skip\":\"none\",\"max_rows\":10}"));
+    Assert.assertTrue(dropsAll, dropsAll.startsWith("Accumulation Point | Acc.Pt. Size"));
+    assertToolError("big_drops", "{\"skip\":\"a b\"}", "must not contain spaces");
+    String unreachable = okText(callTool("unreachable_objects", "{}"));
+    Assert.assertTrue(unreachable, unreachable.contains("| Class Name | Objects | Shallow Heap |"));
+  }
+
+  @Test
+  public void referenceStatistics() {
+    openDump();
+    for (String kind : new String[] {"weak", "soft", "phantom", "finalizer"}) {
+      String stats = okText(callTool("reference_statistics", "{\"kind\":\"" + kind + "\"}"));
+      Assert.assertTrue(kind + ": " + stats, stats.startsWith("###") || stats.startsWith("##"));
+      Assert.assertTrue(kind + ": " + stats, stats.contains("| Class Name | Objects | Shallow Heap |"));
+    }
+    String custom = okText(callTool("reference_statistics", "{\"kind\":\"custom\","
+        + "\"class_regex\":\"java\\\\.lang\\\\.ref\\\\.WeakReference\"}"));
+    Assert.assertTrue(custom, custom.contains("Histogram of referent objects"));
+    assertToolError("reference_statistics", "{\"kind\":\"custom\"}", "Missing argument: class_regex");
+    assertToolError("reference_statistics", "{\"kind\":\"weak\",\"class_regex\":\"a\"}", "only used with kind custom");
+    assertToolError("reference_statistics", "{\"kind\":\"x\"}", "kind must be weak, soft, phantom, finalizer or custom");
+  }
+
+  @Test
+  public void collectionStats() {
+    openDump();
+    String fill = okText(callTool("collection_stats", "{\"class_regex\":\"java\\\\.util\\\\.HashMap\","
+        + "\"kind\":\"fill_ratio\",\"segments\":4}"));
+    Assert.assertTrue(fill, fill.contains("| Fill Ratio |"));
+    Assert.assertEquals(fill, 4, fill.split("\n\\| <= ").length - 1);
+    Assert.assertTrue(okText(callTool("collection_stats", "{\"class_regex\":\"java\\\\.util\\\\.HashMap\","
+        + "\"kind\":\"collision_ratio\"}")).contains("| Collision Ratio |"));
+    Assert.assertTrue(okText(callTool("collection_stats", "{\"class_regex\":\"java\\\\.util\\\\.ArrayList\","
+        + "\"kind\":\"collection_sizes\"}")).contains("| Length |"));
+    Assert.assertTrue(okText(callTool("collection_stats", "{\"class_regex\":\"java\\\\.lang\\\\.Object\\\\[\\\\]\","
+        + "\"kind\":\"array_fill_ratio\"}")).contains("| Fill Ratio |"));
+    Assert.assertTrue(okText(callTool("collection_stats", "{\"class_regex\":\"java\\\\.lang\\\\.Object\\\\[\\\\]\","
+        + "\"kind\":\"array_sizes\"}")).contains("| Single Instance Size |"));
+    assertToolError("collection_stats", "{\"class_regex\":\"a\",\"kind\":\"collection_sizes\",\"segments\":3}",
+        "segments applies to");
+    assertToolError("collection_stats", "{\"class_regex\":\"a\"}", "kind must be");
+  }
+
+  @Test
+  public void groupByValueAndFindStrings() {
+    openDump();
+    String strings = okText(callTool("group_by_value", "{\"class_regex\":\"java\\\\.lang\\\\.String\",\"max_rows\":3}"));
+    Assert.assertTrue(strings, strings.contains("| String Value | Objects |"));
+    String byField = okText(callTool("group_by_value", "{\"class_regex\":\"java\\\\.util\\\\.HashMap\","
+        + "\"field\":\"size\",\"max_rows\":3}"));
+    Assert.assertTrue(byField, byField.contains("| String Value | Objects |"));
+    assertToolError("group_by_value", "{\"class_regex\":\"a\",\"field\":\"x y\"}", "field must be a field name");
+    String found = okText(callTool("find_strings", "{\"pattern\":\".*String.*\",\"max_rows\":3}"));
+    Assert.assertTrue(found, found.contains("java.lang.String @ 0x"));
+    // only the strings, not their class and value children, unless depth is raised
+    Assert.assertFalse(found, found.contains("\n  <class>"));
+    assertToolError("find_strings", "{\"pattern\":\"a b\"}", "must not contain spaces");
+  }
+
+  @Test
+  public void duplicateClassesAndSystemProperties() {
+    openDump();
+    String duplicates = okText(callTool("duplicate_classes", "{}"));
+    Assert.assertTrue(duplicates, duplicates.startsWith("Class Name | Count | Defined Classes"));
+    String all = okText(callTool("system_properties", "{}"));
+    Assert.assertTrue(all, all.contains("| Collection | Key | Value |"));
+    Assert.assertTrue(all, all.contains("java.version"));
+    String filtered = okText(callTool("system_properties", "{\"filter\":\"JAVA.VERSION\"}"));
+    Assert.assertTrue(filtered, filtered.contains("| java.version |"));
+    Assert.assertTrue(filtered, filtered.endsWith("containing \"JAVA.VERSION\""));
+    Assert.assertFalse(filtered, filtered.contains("| user.dir |"));
+    String none = okText(callTool("system_properties", "{\"filter\":\"no-such-property-zzz\"}"));
+    Assert.assertTrue(none, none.contains("\n0 rows containing"));
+  }
+
+  @Test
+  public void oqlQueries() {
+    openDump();
+    String rows = okText(callTool("oql", "{\"query\":\"select s from java.lang.String s\",\"max_rows\":2}"));
+    Assert.assertTrue(rows, rows.contains("| s |"));
+    Assert.assertTrue(rows, rows.contains("java.lang.String [id=0x"));
+    // double quotes inside the query, and a query over several lines
+    String quoted = okText(callTool("oql", "{\"query\":\"select s\\nfrom java.lang.String s\\nwhere toString(s) = "
+        + "\\\"no-such-string-zzz\\\"\"}"));
+    Assert.assertFalse(quoted, quoted.contains("Problem reported"));
+    // a mistake in the query comes back as text with MAT's explanation
+    String broken = okText(callTool("oql", "{\"query\":\"selekt x\"}"));
+    Assert.assertTrue(broken, broken.contains("Problem reported"));
+  }
+
+  @Test
+  public void sqlKnowsDominatedObjectsAndGcRoots() {
+    String address = biggestHashMap();
+    String dominated = okText(callTool("sql_query", "{\"sql\":\"select d.this from java.util.HashMap m, "
+        + "lateral table(getDominatedObjects(m.this)) d where getAddress(m.this) = " + address + "\"}"));
+    Assert.assertTrue(dominated, dominated.contains("java.util.HashMap$Node[") || dominated.contains("java.util."));
+    String roots = okText(callTool("sql_query", "{\"sql\":\"select getGcRootTypes(this) t, count(*) c from "
+        + "\\\"java.lang.Class\\\" where isGcRoot(this) group by getGcRootTypes(this)\"}"));
+    Assert.assertTrue(roots, roots.contains("System Class"));
+    String notRoot = okText(callTool("sql_query", "{\"sql\":\"select isGcRoot(this) r, getGcRootTypes(this) t from "
+        + "java.util.HashMap where getAddress(this) = " + address + "\"}"));
+    Assert.assertTrue(notRoot, notRoot.contains("| false | null |"));
   }
 
   @Test

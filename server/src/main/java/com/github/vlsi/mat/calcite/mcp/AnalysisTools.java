@@ -285,11 +285,20 @@ final class AnalysisTools {
    * @param sortBy   objects, shallow or retained
    * @param retained compute retained heap even when not sorting by it
    */
-  static String histogram(ISnapshot snapshot, String filter, String sortBy, boolean retained, int maxRows,
-                          Cancellation cancellation) throws Exception {
+  static String histogram(ISnapshot snapshot, String filter, String sortBy, boolean retained, String groupBy,
+                          int maxRows, Cancellation cancellation) throws Exception {
     String sort = sortBy == null || sortBy.trim().isEmpty() ? "shallow" : sortBy.trim().toLowerCase(Locale.ROOT);
     if (!Arrays.asList("objects", "shallow", "retained").contains(sort)) {
       throw new ToolException("sort_by must be objects, shallow or retained, got " + sortBy);
+    }
+    String grouping = MatCommandTools.choice(groupBy, "group_by", "class", "class", "package", "superclass",
+        "class_loader");
+    if (!"class".equals(grouping)) {
+      if ("retained".equals(sort) || retained) {
+        throw new ToolException("Retained heap is only available with group_by class; a group's retained heap is not "
+            + "the sum of its classes'");
+      }
+      return groupedHistogram(snapshot, filter, sort, grouping, maxRows, cancellation);
     }
     java.util.function.Predicate<String> matches = classNameFilter(filter);
     List<ClassHistogramRecord> records = new ArrayList<>();
@@ -350,6 +359,79 @@ final class AnalysisTools {
     sb.append("\n\nNext: sql_query on a class (its table name is the class name in double quotes), or "
         + "retained_set on an object's address.");
     return sb.toString();
+  }
+
+  /** The histogram summed up by package, superclass or class loader, one row per group. */
+  private static String groupedHistogram(ISnapshot snapshot, String filter, String sort, String grouping, int maxRows,
+                                         Cancellation cancellation) throws Exception {
+    java.util.function.Predicate<String> matches = classNameFilter(filter);
+    Map<String, long[]> groups = new HashMap<>(); // classes, objects, shallow heap
+    for (ClassHistogramRecord record : snapshot.getHistogram(cancellation.listener()).getClassHistogramRecords()) {
+      if (record.getNumberOfObjects() == 0 || !matches.test(record.getLabel())) {
+        continue;
+      }
+      if (cancellation.isCancelled()) {
+        throw new CancellationException(cancellation.reason());
+      }
+      String key;
+      IClass clazz = (IClass) snapshot.getObject(record.getClassId());
+      switch (grouping) {
+        case "superclass":
+          key = clazz.getSuperClass() == null ? "<none>" : clazz.getSuperClass().getName();
+          break;
+        case "class_loader":
+          key = snapshot.getObject(clazz.getClassLoaderId()).getDisplayName();
+          break;
+        default:
+          key = packageOf(record.getLabel());
+          break;
+      }
+      long[] group = groups.computeIfAbsent(key, k -> new long[3]);
+      group[0]++;
+      group[1] += record.getNumberOfObjects();
+      group[2] += record.getUsedHeapSize();
+    }
+    List<Map.Entry<String, long[]>> rows = new ArrayList<>(groups.entrySet());
+    int by = "objects".equals(sort) ? 1 : 2;
+    rows.sort((a, b) -> {
+      int order = Long.compare(b.getValue()[by], a.getValue()[by]);
+      return order != 0 ? order : a.getKey().compareTo(b.getKey());
+    });
+    long objects = 0;
+    long shallow = 0;
+    for (Map.Entry<String, long[]> row : rows) {
+      objects += row.getValue()[1];
+      shallow += row.getValue()[2];
+    }
+    StringBuilder sb = new StringBuilder();
+    sb.append(rows.size()).append(rows.size() == 1 ? " group" : " groups").append(" by ").append(grouping.replace('_',
+        ' ')).append(filter == null || filter.trim().isEmpty() ? "" : " for classes matching " + filter.trim())
+        .append(": ").append(objects).append(" objects, ").append(shallow).append(" bytes shallow (")
+        .append(percent(shallow, snapshot.getSnapshotInfo().getUsedHeapSize())).append(" of the heap), sorted by ")
+        .append(sort).append("\n\n| ").append(grouping.replace('_', ' ')).append(" | classes | objects | shallow heap |\n")
+        .append("|---|---|---|---|\n");
+    int shown = Math.min(maxRows, rows.size());
+    for (int i = 0; i < shown; i++) {
+      Map.Entry<String, long[]> row = rows.get(i);
+      sb.append("| ").append(row.getKey().replace("|", "\\|")).append(" | ").append(row.getValue()[0]).append(" | ")
+          .append(row.getValue()[1]).append(" | ").append(row.getValue()[2]).append(" |\n");
+    }
+    sb.append('\n').append(shown).append(" of ").append(rows.size()).append(" groups shown")
+        .append(rows.size() > shown ? " (raise max_rows)" : "");
+    return sb.toString();
+  }
+
+  /** The package of a class label, e.g. java.util for java.util.HashMap$Node[]; primitive arrays have none. */
+  private static String packageOf(String label) {
+    String name = label;
+    while (name.endsWith("[]")) {
+      name = name.substring(0, name.length() - 2);
+    }
+    int dot = name.lastIndexOf('.');
+    if (dot >= 0) {
+      return name.substring(0, dot);
+    }
+    return label.endsWith("[]") ? "<primitive arrays>" : "<default package>";
   }
 
   private static java.util.function.Predicate<String> classNameFilter(String filter) {

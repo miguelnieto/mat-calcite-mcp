@@ -36,6 +36,8 @@ public final class SqlReference {
       + "  getAddress(any)             address of the referenced object\n"
       + "  getHexAddress(any)          the same as hex text, e.g. 0x7bfeb5848\n"
       + "  getDominator(any)           immediate dominator, or null when dominated by the root\n"
+      + "  isGcRoot(any)               true if the object is a GC root\n"
+      + "  getGcRootTypes(any)         GC root types, e.g. System Class, JNI Global; null if not a root\n"
       + "  getType(any)                class name of the referenced object\n"
       + "  shallowSize(any)            shallow heap size\n"
       + "  retainedSize(any)           retained heap size\n"

@@ -46,9 +46,11 @@ The server speaks MCP on stdin/stdout, so Docker runs it with `-i` and no TTY.
 |---|---|
 | Dumps and schema | `open_heap_dump`, `list_heap_dumps`, `close_heap_dump`, `list_tables`, `describe_table` |
 | SQL | `sql_query` (markdown, row limit), `explain_sql`, `sql_reference`, `export_query` (CSV, all rows) |
-| One object, as on MAT's context menu | `object_info`, `list_references`, `retained_set`, `path_to_gc_roots`, `immediate_dominators` |
-| Any other MAT command | `mat_query`, e.g. `top_consumers`, `find_leaks`, `dominator_tree` |
-| Analyses | `heap_overview`, `histogram`, `leak_suspects`, `compare_dumps`, `collection_contents`, `duplicate_strings`, `wasteful_collections` |
+| One object, as on MAT's context menu | `object_info`, `list_references`, `retained_set` (optionally ignoring references), `path_to_gc_roots` (optionally through weak references), `immediate_dominators`, `collection_contents` |
+| Why memory is held | `dominator_tree` (whole heap, or one object), `merge_paths_to_gc_roots` (many objects), `gc_roots`, `class_references`, `big_drops`, `threads` |
+| Waste and leaks | `heap_overview`, `histogram` (by class, package, superclass or class loader), `leak_suspects`, `compare_dumps`, `duplicate_strings`, `wasteful_collections`, `collection_stats`, `group_by_value`, `reference_statistics`, `unreachable_objects`, `duplicate_classes` |
+| Search and context | `find_strings`, `system_properties`, `oql` |
+| Any other MAT command | `mat_query`, e.g. `top_consumers`, `find_leaks`, `thread_stack` |
 | Control | `cancel_query`; every long call also takes `timeout_seconds` |
 
 Results show objects as `class @ 0xaddress`, and the object tools take those addresses, so the assistant can chain

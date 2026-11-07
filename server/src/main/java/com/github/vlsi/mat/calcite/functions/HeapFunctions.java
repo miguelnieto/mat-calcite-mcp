@@ -246,6 +246,29 @@ public class HeapFunctions extends HeapFunctionsBase {
     return "0x" + Long.toHexString(ref.getIObject().getObjectAddress());
   }
 
+  /** Whether MAT treats the object as a GC root. */
+  @SuppressWarnings("unused")
+  public static boolean isGcRoot(Object r) {
+    HeapReference ref = ensureHeapReference(r);
+    return ref != null && ref.getIObject().getSnapshot().isGCRoot(ref.getIObject().getObjectId());
+  }
+
+  /** The GC root types of the object, e.g. "System Class, JNI Global", or null if it is not a GC root. */
+  @SuppressWarnings("unused")
+  public static String getGcRootTypes(Object r) {
+    HeapReference ref = ensureHeapReference(r);
+    if (ref == null) {
+      return null;
+    }
+    try {
+      ISnapshot snapshot = ref.getIObject().getSnapshot();
+      GCRootInfo[] roots = snapshot.getGCRootInfo(ref.getIObject().getObjectId());
+      return roots == null || roots.length == 0 ? null : GCRootInfo.getTypeSetAsString(roots);
+    } catch (SnapshotException e) {
+      throw new RuntimeException("Cannot obtain GC root types for " + r, e);
+    }
+  }
+
   @SuppressWarnings("unused")
   public static Object getDominator(Object r) {
     HeapReference ref = ensureHeapReference(r);

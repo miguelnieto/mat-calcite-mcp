@@ -4,6 +4,23 @@
 
 - Documentation for assistants: `docs/querying.md` (SQL dialect, table functions, recipes, what doesn't work, and the
   MAT commands that work through `mat_query`) and a `mat-heap-analysis` Claude Code skill in `skills/`.
+- New tool `dominator_tree`: MAT's dominator tree for the whole heap, as objects or summed by class, class loader or
+  package (`group_by`), or what one object dominates (`address`).
+- New tool `threads`: the threads of the dumped JVM with state and retained heap, optionally with stack frames and the
+  heap their locals hold, or the details of given threads.
+- New tools with explicit options for MAT analyses that were only reachable through `mat_query`:
+  `merge_paths_to_gc_roots`, `gc_roots`, `class_references`, `big_drops`, `unreachable_objects`,
+  `reference_statistics`, `collection_stats`, `group_by_value`, `find_strings`, `duplicate_classes`,
+  `system_properties` and `oql`. The values that go into a MAT command line are validated, so a space, a quote or a
+  leading dash cannot add an option such as a file to write.
+- `histogram` takes `group_by` (class, package, superclass, class_loader); `path_to_gc_roots` takes
+  `include_weak_refs`, and says when only weak, soft, phantom or finalizer references reach an object;
+  `retained_set` takes `excluded_references` (MAT's customized retained set, without opening its file option to
+  `mat_query`).
+- SQL: table function `getDominatedObjects(x)`, and `isGcRoot(x)` and `getGcRootTypes(x)`.
+- `mat_query` now shows MAT's report results as text instead of a placeholder: `thread_details`, `leakhunter`,
+  `finalizer_overview` and the weak, soft, phantom and finalizer reference statistics. Charts are left out, HTML is
+  turned into text, and text results are cut at `max_rows` lines.
 
 ## [0.1.0] - 2026-11-07
 

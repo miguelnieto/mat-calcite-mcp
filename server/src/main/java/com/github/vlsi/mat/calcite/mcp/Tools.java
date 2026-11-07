@@ -24,6 +24,20 @@ final class Tools {
   static final String RETAINED_SET = "retained_set";
   static final String PATH_TO_GC_ROOTS = "path_to_gc_roots";
   static final String IMMEDIATE_DOMINATORS = "immediate_dominators";
+  static final String DOMINATOR_TREE = "dominator_tree";
+  static final String THREADS = "threads";
+  static final String MERGE_PATHS = "merge_paths_to_gc_roots";
+  static final String GC_ROOTS = "gc_roots";
+  static final String CLASS_REFERENCES = "class_references";
+  static final String BIG_DROPS = "big_drops";
+  static final String UNREACHABLE = "unreachable_objects";
+  static final String REFERENCE_STATISTICS = "reference_statistics";
+  static final String COLLECTION_STATS = "collection_stats";
+  static final String GROUP_BY_VALUE = "group_by_value";
+  static final String FIND_STRINGS = "find_strings";
+  static final String DUPLICATE_CLASSES = "duplicate_classes";
+  static final String SYSTEM_PROPERTIES = "system_properties";
+  static final String OQL = "oql";
   static final String MAT_QUERY = "mat_query";
   static final String CANCEL = "cancel_query";
   static final String HEAP_OVERVIEW = "heap_overview";
@@ -36,12 +50,15 @@ final class Tools {
   static final String HISTOGRAM = "histogram";
 
   static final List<String> NAMES = Arrays.asList(OPEN, LIST_DUMPS, LIST_TABLES, DESCRIBE, QUERY, EXPLAIN, REFERENCE,
-      CLOSE, OBJECT_INFO, REFERENCES, RETAINED_SET, PATH_TO_GC_ROOTS, IMMEDIATE_DOMINATORS, MAT_QUERY, CANCEL,
-      HEAP_OVERVIEW, HISTOGRAM, LEAK_SUSPECTS, COMPARE_DUMPS, COLLECTION_CONTENTS, EXPORT_QUERY, DUPLICATE_STRINGS,
+      CLOSE, OBJECT_INFO, REFERENCES, RETAINED_SET, PATH_TO_GC_ROOTS, IMMEDIATE_DOMINATORS, DOMINATOR_TREE, THREADS,
+      MERGE_PATHS, GC_ROOTS, CLASS_REFERENCES, BIG_DROPS, UNREACHABLE, REFERENCE_STATISTICS, COLLECTION_STATS,
+      GROUP_BY_VALUE, FIND_STRINGS, DUPLICATE_CLASSES, SYSTEM_PROPERTIES, OQL, MAT_QUERY, CANCEL, HEAP_OVERVIEW, HISTOGRAM, LEAK_SUSPECTS, COMPARE_DUMPS, COLLECTION_CONTENTS, EXPORT_QUERY, DUPLICATE_STRINGS,
       WASTEFUL_COLLECTIONS);
   /** Tools that can run long, and so take timeout_seconds. */
   static final List<String> TIMED = Arrays.asList(OPEN, DESCRIBE, QUERY, EXPLAIN, OBJECT_INFO, REFERENCES, RETAINED_SET,
-      PATH_TO_GC_ROOTS, IMMEDIATE_DOMINATORS, MAT_QUERY, HEAP_OVERVIEW, LEAK_SUSPECTS, COMPARE_DUMPS,
+      PATH_TO_GC_ROOTS, IMMEDIATE_DOMINATORS, DOMINATOR_TREE, THREADS, MERGE_PATHS, GC_ROOTS,
+      CLASS_REFERENCES, BIG_DROPS, UNREACHABLE, REFERENCE_STATISTICS, COLLECTION_STATS, GROUP_BY_VALUE, FIND_STRINGS,
+      DUPLICATE_CLASSES, SYSTEM_PROPERTIES, OQL, MAT_QUERY, HEAP_OVERVIEW, LEAK_SUSPECTS, COMPARE_DUMPS,
       COLLECTION_CONTENTS, EXPORT_QUERY, DUPLICATE_STRINGS, WASTEFUL_COLLECTIONS, HISTOGRAM);
 
   private static final String ADDRESS_ONE = "Object address as shown in results, e.g. 0x7bfeb5848";
@@ -99,13 +116,21 @@ final class Tools {
             prop("depth", "integer", "Levels of references to follow (default 1)"), maxRows(), maxChildren(),
             timeout()), "address"));
     tools.add(tool(RETAINED_SET, "What the given objects keep alive: the objects that would be freed with them, as "
-            + "a histogram by class with counts and sizes.",
-        properties(prop("dump", "string", DUMP_DESCRIPTION), prop("address", "string", ADDRESSES), maxRows(),
+            + "a histogram by class with counts and sizes. With excluded_references, references of those kinds from "
+            + "other objects do not count as keeping anything alive, so objects that are also held through them, "
+            + "e.g. by weak caches (java.lang.ref.Reference:referent), count as retained here.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION), prop("address", "string", ADDRESSES),
+            prop("excluded_references", "string", "References to ignore, as class:field separated by spaces or "
+                + "commas (class names include subclasses), e.g. java.lang.ref.Reference:referent (default: none)"),
+            maxRows(),
             timeout()), "address"));
     tools.add(tool(PATH_TO_GC_ROOTS, "Why an object is alive: the shortest reference paths from GC roots to it, as a "
-            + "tree (weak, soft, phantom and finalizer references excluded). The key tool for memory leaks.",
+            + "tree (by default weak, soft, phantom and finalizer references are not followed: an object that only "
+            + "they reach shows no path). The key tool for memory leaks.",
         properties(prop("dump", "string", DUMP_DESCRIPTION), prop("address", "string", ADDRESS_ONE),
             prop("paths", "integer", "Number of paths (default 3)"),
+            prop("include_weak_refs", "boolean", "Also follow weak, soft, phantom and finalizer references "
+                + "(default false)"),
             prop("depth", "integer", "Tree levels to show (default 30)"), maxRows(), maxChildren(), timeout()),
         "address"));
     tools.add(tool(IMMEDIATE_DOMINATORS, "The objects that directly dominate (keep alive) the given objects, grouped "
@@ -114,11 +139,115 @@ final class Tools {
             prop("skip", "string", "Regular expression of dominator classes to step over, e.g. java\\..*|sun\\..* to "
                 + "find the first application-level dominator. Default: none (the true immediate dominators)."),
             maxRows(), timeout()), "address"));
+    tools.add(tool(DOMINATOR_TREE, "MAT's dominator tree: the objects that keep the most memory alive, with shallow "
+            + "and retained heap and the share of the heap. Without address it covers the whole heap: as single "
+            + "objects (group_by none, the default), or summed by class, class loader or package. With address it shows "
+            + "what that one object dominates, level by level.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("address", "string", "Show what this object dominates, e.g. 0x7bfeb5848 (cannot be combined with "
+                + "group_by)"),
+            prop("group_by", "string", "none (default), class, class_loader or package; the whole heap only"),
+            prop("depth", "integer", "Tree levels below the top elements to show (default 1)"), maxRows(),
+            maxChildren(), timeout())));
+    tools.add(tool(THREADS, "Threads of the dumped JVM: name, state, daemon flag, priority, context class loader and "
+            + "the heap each retains, largest first. Memory held by a thread's local variables is the first thing to "
+            + "check when a thread (a request, a pool worker) retains much. With address it gives the details of "
+            + "those threads: properties and stack frames.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("address", "string", "Thread objects to describe, e.g. 0x7bfeb5848; empty lists all threads"),
+            prop("include_stacks", "boolean", "Also list each thread's stack frames with the heap its locals retain "
+                + "(default false; all threads only)"),
+            prop("max_rows", "integer", "Threads to list, or lines in total (default 100)"),
+            prop("max_frames", "integer", "Stack frames shown per thread (default 20)"), timeout())));
+    tools.add(tool(MERGE_PATHS, "Why many objects are alive: the shortest paths from GC roots to all of them, merged "
+            + "into one tree, so shared parents show once. Give either addresses or a class regex (all instances).",
+        properties(prop("dump", "string", DUMP_DESCRIPTION), prop("address", "string", ADDRESSES + " (or use "
+                + "class_regex)"),
+            prop("class_regex", "string", "Regular expression for the whole class name, e.g. java\\.util\\.Properties "
+                + "or com\\.example\\..*; no spaces (or use address)"),
+            prop("group_by", "string", "from_gc_roots (default: the tree starts at the GC roots), "
+                + "from_gc_roots_by_class (the roots' classes first) or from_objects_by_class (the objects' classes "
+                + "first)"),
+            prop("include_weak_refs", "boolean", "Also follow weak, soft, phantom and finalizer references "
+                + "(default false)"),
+            prop("depth", "integer", "Tree levels to show (default 30)"), maxRows(), maxChildren(), timeout())));
+    tools.add(tool(GC_ROOTS, "The GC roots of the heap by type (system class, JNI global, thread block, Java local...) "
+            + "with the classes of the objects under each.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("depth", "integer", "Tree levels to show (default 1)"), maxRows(), maxChildren(), timeout())));
+    tools.add(tool(CLASS_REFERENCES, "Who references the instances of the matching classes (incoming) or what they "
+            + "reference (outgoing), summed up by class: for example which classes hold the 29 URLs. For one object "
+            + "use list_references.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("class_regex", "string", "Regular expression for the whole class name, e.g. java\\.net\\.URL; no "
+                + "spaces"),
+            prop("direction", "string", "incoming (default) or outgoing"),
+            prop("depth", "integer", "Tree levels to show (default 1)"), maxRows(), maxChildren(), timeout()),
+        "class_regex"));
+    tools.add(tool(BIG_DROPS, "Where the memory piles up: objects whose retained heap is much larger than the sum "
+            + "of their children's, in MAT's dominator tree (accumulation points of a leak), with the dominator of "
+            + "each. A complement to leak_suspects.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("skip", "string", "Regular expression of dominator classes to step over (default: java.*, javax.*, "
+                + "com.sun.*, sun.* and jdk.*); none steps over nothing"),
+            prop("depth", "integer", "Tree levels to show (default 1)"), maxRows(), maxChildren(), timeout())));
+    tools.add(tool(UNREACHABLE, "Objects that no GC root reaches (garbage still in the dump), per class with counts "
+            + "and sizes. A dump taken without a full GC contains such objects; MAT keeps them apart from the heap.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION), maxRows(), timeout())));
+    tools.add(tool(REFERENCE_STATISTICS, "What weak, soft, phantom or finalizer references hold: the referents by "
+            + "class, those kept alive only by the references, and those that are also strongly held. Soft or weak "
+            + "caches that retain much memory show here.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("kind", "string", "weak (default), soft, phantom, finalizer or custom"),
+            prop("class_regex", "string", "For kind custom: a regular expression for the whole name of a Reference "
+                + "subclass, e.g. com\\.example\\.CacheRef"), maxRows(), timeout())));
+    tools.add(tool(COLLECTION_STATS, "Distribution of a collection class: by fill ratio, by hash collision ratio, by "
+            + "size, or the same for arrays, with the number of objects and the memory wasted in each bucket. For the "
+            + "worst single collections use wasteful_collections.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("class_regex", "string", "Regular expression for the whole class name, e.g. java\\.util\\.HashMap "
+                + "or java\\.lang\\.Object\\[\\]; no spaces"),
+            prop("kind", "string", "fill_ratio, collision_ratio (maps), array_fill_ratio, collection_sizes or "
+                + "array_sizes"),
+            prop("segments", "integer", "Number of buckets for the ratios (default 5; not for the size kinds)"),
+            maxRows(), timeout()), "class_regex", "kind"));
+    tools.add(tool(GROUP_BY_VALUE, "Objects of the matching classes grouped by their value: the text of a String, "
+            + "the number in an Integer, or the value of a named field. Finds duplicated values in any class, not "
+            + "only strings (duplicate_strings does those).",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("class_regex", "string", "Regular expression for the whole class name, e.g. java\\.lang\\.Integer; "
+                + "no spaces"),
+            prop("field", "string", "Group by this field's value instead, e.g. size"), maxRows(), timeout()),
+        "class_regex"));
+    tools.add(tool(FIND_STRINGS, "Strings whose whole text matches a regular expression, with their addresses, for "
+            + "example secrets or URLs held in memory. For counting, or for part of a text, sql_query with like is "
+            + "often easier.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("pattern", "string", "Regular expression the whole text must match, e.g. .*password.* (no spaces: "
+                + "write \\s)"),
+            prop("class_regex", "string", "Classes to search (default java.lang.String)"),
+            prop("depth", "integer", "Tree levels to show (default 0: only the strings)"), maxRows(), maxChildren(),
+            timeout()), "pattern"));
+    tools.add(tool(DUPLICATE_CLASSES, "Classes that are defined more than once, by different class loaders, with the "
+            + "loaders and the number of instances: a typical sign of a class loader leak in application servers.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION), maxRows(), timeout())));
+    tools.add(tool(SYSTEM_PROPERTIES, "The System properties of the dumped JVM: java.version, java.vm.*, user.dir, "
+            + "the command line and so on.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("filter", "string", "Only properties whose name or value contains this text, ignoring case"),
+            timeout())));
+    tools.add(tool(OQL, "Run an OQL query, Eclipse MAT's SQL-like language for heap objects, e.g. select s from "
+            + "java.lang.String s where s.value.@length > 1000. Strings use double quotes. sql_query is usually more "
+            + "powerful; use this for MAT-specific syntax (@retainedHeapSize, @length, instanceof).",
+        properties(prop("dump", "string", DUMP_DESCRIPTION), prop("query", "string", "The OQL query"),
+            prop("depth", "integer", "Tree levels to show (default 0)"), maxRows(), maxChildren(), timeout()),
+        "query"));
     tools.add(tool(MAT_QUERY, "Run any Eclipse MAT query by its command line, e.g. \"histogram\", \"find_leaks\", "
             + "\"top_consumers\", \"dominator_tree\", \"thread_overview\", \"duplicate_classes\", "
             + "\"collection_fill_ratio\", \"gc_roots\", \"path2gc 0x...\", \"list_objects -inbound 0x...\". Objects in "
-            + "command lines must be hex addresses (0x...); get them in SQL with getHexAddress(this). Tables come back "
-            + "as markdown, trees as indented lines. Commands that read or write files, open other dumps or run "
+            + "command lines are hex addresses (0x...; get them in SQL with getHexAddress(this)) or, for commands that "
+            + "take objects, a regular expression for class names such as java.util.Hash.*. Tables come back as "
+            + "markdown, trees as indented lines, reports as text with headings. Commands that read or write files, open other dumps or run "
             + "reports (export_hprof, delta_histogram -baseline, create_report...) are refused; use compare_dumps to "
             + "compare dumps.",
         properties(prop("dump", "string", DUMP_DESCRIPTION), prop("command", "string", "The MAT command line"),
@@ -136,7 +265,9 @@ final class Tools {
                 + "empty for all classes"),
             prop("sort_by", "string", "objects, shallow (default) or retained"),
             prop("retained", "boolean", "Also compute retained heap when not sorting by it (default false)"),
-            prop("max_rows", "integer", "Classes to list (default 30)"), timeout())));
+            prop("group_by", "string", "class (default), package, superclass or class_loader: one row per group "
+                + "instead of per class (no retained heap)"),
+            prop("max_rows", "integer", "Classes or groups to list (default 30)"), timeout())));
     tools.add(tool(LEAK_SUSPECTS, "MAT's leak suspects: objects or groups of objects that retain a large share of "
             + "the heap, each with its class loader, its accumulation point (where the memory piles up) and its "
             + "path from a GC root; for a group without one, its biggest instances; for a thread, its stack frames "

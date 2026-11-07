@@ -18,7 +18,8 @@ described are what it did. Object addresses and counts differ in your dump.
 - [SQL features that work](#sql-features-that-work)
 - [What does not work](#what-does-not-work)
 - [Recipes](#recipes)
-- [MAT commands with `mat_query`](#mat-commands-with-mat_query)
+- [MAT analyses as tools](#mat-analyses-as-tools)
+- [More MAT commands with `mat_query`](#more-mat-commands-with-mat_query)
 - [Gotchas](#gotchas)
 
 ## Workflow
@@ -26,8 +27,8 @@ described are what it did. Object addresses and counts differ in your dump.
 1. `open_heap_dump` once. The first open of a dump builds MAT's index files next to it, which can take minutes
    for a large dump. Later opens reuse them. Afterwards the other tools use that dump by default.
 2. Start with `heap_overview`: heap size, the JVM, the biggest objects and the classes using most memory.
-3. Find *what* is big with `histogram`, `leak_suspects`, `duplicate_strings` or `wasteful_collections`, or with
-   your own `sql_query`.
+3. Find *what* is big with `histogram`, `dominator_tree`, `threads`, `leak_suspects`, `duplicate_strings` or
+   `wasteful_collections`, or with your own `sql_query`.
 4. Find *why* an object is alive with its address: `path_to_gc_roots`, `list_references` (incoming),
    `immediate_dominators`. See what it keeps alive with `retained_set`, and what it holds with `collection_contents`
    or `object_info`.
@@ -95,6 +96,8 @@ Columns whose names are not plain identifiers must be quoted: `"@class"`. Field 
 | `getId(x)` | MAT's internal object id |
 | `shallowSize(x)`, `retainedSize(x)` | sizes in bytes |
 | `getDominator(x)` | the immediate dominator, or null |
+| `isGcRoot(x)` | true if the object is a GC root |
+| `getGcRootTypes(x)` | the GC root types as text, e.g. `System Class, JNI Global`; null if it is not a root |
 | `length(array)` | array length |
 | `getSize(x)` | size of a collection or map, or the number of non-null elements of an array |
 | `getField(x, 'name')` | a field value |
@@ -108,6 +111,14 @@ the object's own size.
 ```sql
 select this, getSize(this) size, retainedSize(this) retained
   from instanceof.java.util.HashMap
+ order by retained desc limit 5
+```
+
+GC root facts join with everything else. The class loaders that are GC roots, biggest first:
+
+```sql
+select this, getGcRootTypes(this) root_types, retainedSize(this) retained
+  from instanceof.java.lang.ClassLoader where isGcRoot(this)
  order by retained desc limit 5
 ```
 
@@ -129,6 +140,7 @@ wrapper is required.
 |---|---|
 | `getOutboundReferences(x)` | `(name, this)`: every field or element the object references |
 | `getInboundReferences(x)` | `(this)`: the objects that reference it |
+| `getDominatedObjects(x)` | `(this)`: the objects it immediately dominates, its children in the dominator tree |
 | `getRetainedSet(x)` | `(this)`: every object that would be freed with it |
 | `getValues(x)` | `(this)`: the elements of a collection |
 | `getMapEntries(x)` | `(key, value)`: the entries of a map |
@@ -146,6 +158,15 @@ Who holds the biggest map:
 select i.this
   from java.util.HashMap m, lateral table(getInboundReferences(m.this)) i
  where getSize(m.this) > 10000
+```
+
+What a thread dominates, by class (its children in the dominator tree):
+
+```sql
+select getType(d.this) t, count(*) c, sum(retainedSize(d.this)) retained
+  from java.lang.Thread th, lateral table(getDominatedObjects(th.this)) d
+ where toString(th.name) = 'main'
+ group by getType(d.this) order by retained desc
 ```
 
 What a map keeps alive, by class:
@@ -280,6 +301,40 @@ Also available: `DUAL` (`select 1 from dual`), `cross apply`, `explain plan for 
    thread; use `leak_suspects` on a thread suspect to see its stack frames.
 3. `list_references` with `direction: incoming` shows the referrers one level at a time (`depth` goes deeper).
 4. `immediate_dominators` shows which objects exclusively keep it alive.
+5. `dominator_tree` with its `address` shows the other direction: what the object keeps alive, level by level.
+
+### What dominates the heap?
+
+`dominator_tree` is MAT's dominator tree: the objects that keep the most memory alive, each with its shallow and
+retained heap and its share of the heap. Without arguments it lists the biggest objects. `group_by` sums the same
+tree up instead of listing objects:
+
+| `group_by` | One row per |
+|---|---|
+| `none` (default) | object, with its address |
+| `class` | class, with the number of objects |
+| `class_loader` | class loader |
+| `package` | package, as a tree (`java` > `lang`, `util`...) |
+
+`group_by` covers the whole heap. To see what one object dominates, pass its `address` (not together with
+`group_by`); `depth` goes down more levels, and `max_children` limits the children per level:
+
+```
+dominator_tree {"address": "0x708063870", "depth": 2}
+```
+
+### Which thread holds the memory?
+
+`threads` lists the threads of the dumped JVM, largest retained heap first, with state, daemon flag, priority and
+context class loader. A request or worker thread that retains much usually does so through its local variables:
+
+- `include_stacks: true` adds each thread's stack frames; the column *Max. Locals' Retained Heap* is the most
+  heap the local variables of that frame hold. `max_frames` limits the frames per thread (default 20).
+- `address` (one or more thread addresses) gives the details of those threads instead: their properties and the
+  full stack. An address that is not a thread is refused.
+
+For one thread's locals as rows, query `native.ThreadStackFrames` (see below); for which of its locals matter,
+`leak_suspects` lists the ones that hold at least 1% of a suspect thread.
 
 ### What is eating the memory?
 
@@ -332,73 +387,116 @@ select thread, depth, text from native.ThreadStackFrames where text like '%MySer
 
 ### Other MAT reports
 
-See [MAT commands with `mat_query`](#mat-commands-with-mat_query).
+See [MAT analyses as tools](#mat-analyses-as-tools) and [More MAT commands with `mat_query`](#more-mat-commands-with-mat_query).
 
-## MAT commands with `mat_query`
+## MAT analyses as tools
 
-`mat_query` runs one MAT command line, as typed in MAT's command line or its query browser. Commands come from Eclipse
-MAT 1.17; there is no `help` command, so this is the list of the ones checked against the container image.
+The analyses of Eclipse MAT that matter most for leaks are tools of their own, with named options, so no MAT
+command line is needed. Every tool also takes `dump` (when several are open) and `timeout_seconds`; the ones that
+show trees take `depth`, `max_rows` and `max_children`.
+
+| Tool | Options | Shows |
+|---|---|---|
+| `dominator_tree` | `address`, `group_by` (none, class, class_loader, package) | what keeps the most memory alive, or what one object dominates |
+| `threads` | `address`, `include_stacks`, `max_frames` | threads with state and retained heap; details of given threads |
+| `histogram` | `filter`, `sort_by`, `retained`, `group_by` (class, package, superclass, class_loader) | objects and shallow heap per class, or per group |
+| `path_to_gc_roots` | `address`, `paths`, `include_weak_refs` | why one object is alive |
+| `merge_paths_to_gc_roots` | `address` (several) or `class_regex`, `group_by` (from_gc_roots, from_gc_roots_by_class, from_objects_by_class), `include_weak_refs` | why many objects are alive, as one merged tree |
+| `retained_set` | `address`, `excluded_references` | what objects keep alive, by class |
+| `gc_roots` | | GC roots by type, with the classes under each |
+| `class_references` | `class_regex`, `direction` (incoming, outgoing) | who references all instances of a class, or what they reference |
+| `big_drops` | `skip` | accumulation points: objects whose retained heap far exceeds their children's |
+| `unreachable_objects` | | garbage that is still in the dump, per class |
+| `reference_statistics` | `kind` (weak, soft, phantom, finalizer, custom), `class_regex` | what weak, soft, phantom or finalizer references hold |
+| `collection_stats` | `class_regex`, `kind` (fill_ratio, collision_ratio, array_fill_ratio, collection_sizes, array_sizes), `segments` | collections or arrays in buckets, with the memory wasted |
+| `group_by_value` | `class_regex`, `field` | objects grouped by value, e.g. every distinct `Integer` or field value |
+| `find_strings` | `pattern`, `class_regex` | strings whose text matches a regular expression |
+| `duplicate_classes` | | classes defined by several class loaders |
+| `system_properties` | `filter` | the `System` properties of the dumped JVM |
+| `oql` | `query` | an OQL query |
+
+### Regular expressions in these tools
+
+`class_regex`, `skip` and `pattern` become part of a MAT command line, so they are checked first: no spaces or
+quotes (write `\s` for a space), no leading `-`, and a valid Java regular expression, or the call fails with a
+message saying so. MAT matches class names against the **whole** name, not a part of it:
+
+| To match | Write |
+|---|---|
+| exactly `java.util.HashMap` | `java\.util\.HashMap` |
+| a package and everything in it | `com\.example\..*` |
+| an inner class | `WeakDump\$SoftTarget` |
+| an array | `java\.lang\.Object\[\]` |
+
+`find_strings` matches the whole text of a string the same way: `.*password.*`, not `password`.
+
+### Weak, soft and phantom references
+
+By default MAT ignores weak, soft, phantom and finalizer references when it looks for a path from a GC root.
+An object that only such a reference holds therefore has **no path**: `path_to_gc_roots` shows just the object
+itself and `merge_paths_to_gc_roots` shows nothing. A single row can also mean the object is a GC root itself, so
+the tool says so. To see how the object is reachable, call again with `include_weak_refs` set to true: the
+path then runs through the `referent` field of the `SoftReference`, `WeakReference` or other reference.
+
+`reference_statistics` answers the question from the other side: which objects do the references hold, which of
+those are held **only** by references (the memory a cache gives back under pressure), and which are also held
+strongly (a cache that cannot shrink).
+
+`retained_set` takes `excluded_references`, `class:field` names separated by spaces or commas, where the class
+includes its subclasses: `java.lang.ref.Reference:referent`. References of those kinds from other objects no longer
+count as keeping anything alive, so objects that are also held through them are counted as retained. It answers
+"what would really be freed if I dropped this, ignoring what weak caches hold?".
+
+### OQL
+
+`oql` takes the query as written in MAT, with strings in double quotes and `@` attributes such as `@length`,
+`@retainedHeapSize` and `@usedHeapSize`:
+
+```
+select s from java.lang.String s where s.value.@length > 1000
+select s from java.lang.String s where toString(s) = "needle"
+```
+
+A mistake in the query does not fail the call: MAT's explanation comes back as the text (`Problem reported:`).
+Line breaks in the query are allowed. `sql_query` is usually the better tool; use `oql` for MAT-only syntax.
+
+## More MAT commands with `mat_query`
+
+`mat_query` runs one MAT command line, as typed in MAT's command line or its query browser, for the commands that
+have no tool and for options a tool does not offer. Commands come from Eclipse MAT 1.17; there is no `help`
+command, so this is the list of the ones checked against the container image.
 
 How a command line is written:
 
-- `command [objects] [-option value]...`. Options have the names shown below; an unknown one fails with
-  `Query '<name>' has no argument '<option>'`.
+- `command [objects] [-option value]...`. An unknown option fails with `Query '<name>' has no argument '<option>'`.
 - Where a command takes **objects**, give addresses (`0x708063870`, several separated by spaces) or a regular
-  expression for class names (`java.util.Hash.*`). In a regular expression, escape brackets for arrays:
-  `java.lang.Object\[\]`.
-- `max_rows`, `depth` and `max_children` of the tool limit the output.
-
-### Memory by class, package and class loader
+  expression for the whole class name (`java\.util\.Hash.*`).
+- `max_rows`, `depth` and `max_children` of the tool limit the output. Reports (commands with several parts) are
+  shown as text, each part under a heading; charts are left out, HTML becomes plain text, and text is cut at
+  `max_rows` lines.
 
 | Command | What it shows |
 |---|---|
-| `histogram [regex] [-groupBy BY_CLASS\|BY_SUPERCLASS\|BY_CLASSLOADER\|BY_PACKAGE]` | objects and shallow heap per class, or per package, loader or superclass |
-| `dominator_tree [-groupBy NONE\|BY_CLASS\|BY_CLASSLOADER\|BY_PACKAGE]` | retained heap of the biggest objects, or summed per class, package or loader |
 | `top_consumers` | biggest objects, classes, class loaders and packages in one report |
-| `unreachable_objects` | objects no GC root reaches, per class |
-
-### Why something is alive, and what it holds
-
-| Command | What it shows |
-|---|---|
-| `path2gc <address> [-numberOfPaths n] [-excludes class:field ...]` | paths from GC roots; the `path_to_gc_roots` tool |
-| `merge_shortest_paths <objects> [-groupBy FROM_GC_ROOTS\|FROM_GC_ROOTS_BY_CLASS\|FROM_OBJECTS_BY_CLASS]` | the shortest paths of **many** objects merged into one tree: why are these 50 objects alive |
-| `gc_roots` | GC roots by type (system class, JNI global...) and the classes under each |
-| `immediate_dominators <objects> [-skip regex]` | who keeps them alive exclusively; the `immediate_dominators` tool |
-| `show_dominator_tree <address>` | what the object dominates, as a tree |
-| `show_retained_set <objects>` | what they keep alive, by class; the `retained_set` tool |
-| `list_objects <objects> [-inbound]` | what they reference, or who references them; the `list_references` tool |
-| `class_references <regex> [-inbound]` | the same for all instances of a class, grouped by class |
-| `big_drops_in_dominator_tree` | objects where the retained heap drops sharply: where the memory piles up |
 | `find_leaks [-threshold_percent n]` | leak suspects as a table (the `leak_suspects` tool adds the paths and stacks) |
-
-### Collections, arrays and strings
-
-| Command | What it shows |
-|---|---|
-| `collection_fill_ratio <regex>` | collections by how full they are, with the wasted heap |
-| `map_collision_ratio <regex>` | hash maps by collision ratio |
-| `array_fill_ratio <regex>` | arrays by share of non-null slots |
-| `collections_grouped_by_size <regex>`, `arrays_grouped_by_size <regex>` | how many collections or arrays have each length |
-| `hash_entries <address>` | the key/value pairs of a hash map |
-| `extract_list_values <address>` | the elements of a list |
-| `group_by_value <regex>` | objects grouped by their text, e.g. `java.lang.String` |
-| `find_strings <regex> -pattern <regex>` | strings whose text matches `-pattern` |
-| `oql "select ... from ..."` | MAT's own OQL query language |
-| `system_properties` | the `System` properties of the dumped JVM |
-| `thread_overview [address]`, `thread_stack <address>` | threads, state and stack frames, with the memory their locals hold |
-| `duplicate_classes`, `waste_in_char_arrays -minimumWaste n`, `primitive_arrays_with_a_constant_value <regex>` | ran without error; each lists nothing when the dump has no match |
+| `leakhunter` | MAT's leak-hunter report: suspects with descriptions, paths and thread stacks |
+| `show_dominator_tree <address>` | what the object dominates; the `dominator_tree` tool with `address` |
+| `list_objects <objects> [-inbound]` | what they reference, or who references them; the `list_references` tool |
+| `immediate_dominators <objects> [-skip regex]` | who keeps them alive exclusively; the `immediate_dominators` tool |
+| `thread_stack <address>` | the stack frames of a thread, as text; `threads` with `address` gives more |
+| `finalizer_overview`, `finalizer_queue` | objects waiting for or in finalization, and the finalizer thread |
+| `hash_entries <address>` | the key/value pairs of a hash map; the `collection_contents` tool |
+| `extract_list_values <address>` | the elements of a list; the `collection_contents` tool |
+| `waste_in_char_arrays -minimumWaste n`, `primitive_arrays_with_a_constant_value <regex>` | ran without error; each lists nothing when the dump has no match |
 
 ### What `mat_query` does not give you
 
 - **Commands that need a file** are refused, because the server must not write files through MAT:
   `export_hprof`, `create_report`, `default_report`, `delta_histogram` (use `compare_dumps`), and any command with a
-  file-valued option, including `customized_retained_set`, `find_leaks2` and `leakhunter2`. The check looks at the
-  command's definition, not at what you pass.
-- **A few commands return only a placeholder** such as `SectionSpec: …@2d62cff3`, because the server cannot
-  render their result yet: `thread_details`, `weak_references_statistics`, `soft_references_statistics`,
-  `phantom_references_statistics`, `finalizer_overview` and `leakhunter`. Use `thread_overview` and `thread_stack`,
-  and the `leak_suspects` and `find_leaks` outputs, instead.
+  file-valued option, including `customized_retained_set` (use `retained_set` with `excluded_references`),
+  `find_leaks2` and `leakhunter2`. The check looks at the command's definition, not at what you pass; the tools
+  above build their command lines themselves from checked values.
+- **Charts are left out.** A pie chart in a report appears as `(not shown: PieImpl)`.
 - `top_consumers` rejected the option names I tried for its threshold; run it without options.
 
 ## Gotchas

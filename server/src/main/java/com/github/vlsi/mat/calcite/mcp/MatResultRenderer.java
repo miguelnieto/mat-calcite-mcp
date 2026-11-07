@@ -9,8 +9,15 @@ import org.eclipse.mat.query.refined.RefinedResultBuilder;
 import org.eclipse.mat.query.refined.RefinedStructuredResult;
 import org.eclipse.mat.query.refined.RefinedTable;
 import org.eclipse.mat.query.refined.RefinedTree;
+import org.eclipse.mat.query.results.CompositeResult;
 import org.eclipse.mat.query.results.TextResult;
+import org.eclipse.mat.report.QuerySpec;
+import org.eclipse.mat.report.SectionSpec;
+import org.eclipse.mat.report.Spec;
 import org.eclipse.mat.snapshot.ISnapshot;
+import org.eclipse.mat.snapshot.query.SnapshotQuery;
+import org.eclipse.mat.util.IProgressListener;
+import org.eclipse.mat.util.VoidProgressListener;
 
 import java.util.List;
 
@@ -31,6 +38,8 @@ final class MatResultRenderer {
   private boolean deeper;
   /** Label of the column to sort by, largest first, or null for the result's own order. */
   private String sortColumn;
+  /** Where MAT queries that a report part names are run and cancelled. */
+  private IProgressListener listener = new VoidProgressListener();
 
   /**
    * @param maxRows     rows of a table, or lines of a tree
@@ -52,9 +61,21 @@ final class MatResultRenderer {
     return this;
   }
 
+  /** Runs the queries that report parts name (see {@link #render}) with this listener, so a cancel reaches them. */
+  MatResultRenderer withListener(IProgressListener progressListener) {
+    this.listener = progressListener;
+    return this;
+  }
+
   String render(ISnapshot snapshot, IResult result) {
     if (result instanceof TextResult) {
-      return ((TextResult) result).getText();
+      TextResult text = (TextResult) result;
+      return limitLines(text.isHtml() ? htmlToText(text.getText()) : text.getText());
+    }
+    if (result instanceof SectionSpec || result instanceof QuerySpec || result instanceof CompositeResult) {
+      StringBuilder sb = new StringBuilder();
+      renderReport(sb, snapshot, result, 2);
+      return sb.toString().trim();
     }
     if (!(result instanceof IStructuredResult)) {
       return result == null ? "(no result)" : result.getClass().getSimpleName() + ": " + result;
@@ -92,6 +113,96 @@ final class MatResultRenderer {
       sb.append("; ").append("deeper levels not shown (raise depth)");
     }
     return sb.toString();
+  }
+
+  /**
+   * MAT's report results: sections that hold named parts, each a table, a tree, text, or a MAT command to run (as
+   * in thread_details and leakhunter). Each part is rendered with the same limits and gets a markdown heading.
+   */
+  private void renderReport(StringBuilder sb, ISnapshot snapshot, IResult result, int level) {
+    if (result instanceof SectionSpec) {
+      SectionSpec section = (SectionSpec) result;
+      heading(sb, section.getName(), level);
+      for (Spec child : section.getChildren()) {
+        renderReport(sb, snapshot, child, level + 1);
+      }
+    } else if (result instanceof QuerySpec) {
+      QuerySpec query = (QuerySpec) result;
+      heading(sb, query.getName(), level);
+      IResult part = query.getResult();
+      if (part == null && query.getCommand() != null) {
+        part = runPartCommand(sb, snapshot, query.getCommand());
+      }
+      if (part != null) {
+        renderReport(sb, snapshot, part, level + 1);
+      }
+    } else if (result instanceof CompositeResult) {
+      CompositeResult composite = (CompositeResult) result;
+      heading(sb, composite.getName(), level);
+      for (CompositeResult.Entry entry : composite.getResultEntries()) {
+        heading(sb, entry.getName(), level + 1);
+        renderReport(sb, snapshot, entry.getResult(), level + 2);
+      }
+    } else if (result instanceof TextResult || result instanceof IStructuredResult) {
+      sb.append(new MatResultRenderer(maxRows, maxDepth, maxChildren).sortedBy(sortColumn).withListener(listener)
+          .render(snapshot, result)).append("\n\n");
+    } else {
+      // charts and other results that have no text form
+      sb.append("(not shown: ").append(result == null ? "empty" : result.getClass().getSimpleName()).append(")\n\n");
+    }
+  }
+
+  /** At most max_rows lines of a text, with a note of how many were left out. */
+  private String limitLines(String text) {
+    if (text == null) {
+      return "";
+    }
+    String[] lines = text.split("\r?\n", -1);
+    if (lines.length <= maxRows) {
+      return text;
+    }
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < maxRows; i++) {
+      sb.append(lines[i]).append('\n');
+    }
+    return sb.append("... ").append(lines.length - maxRows).append(" more lines (raise max_rows)").toString();
+  }
+
+  /** The text of the small HTML that MAT writes into report parts: line breaks for blocks and items, no tags. */
+  static String htmlToText(String html) {
+    if (html == null) {
+      return "";
+    }
+    String text = html
+        .replaceAll("(?is)<a\\s+href=\"mat://[^\"]*\"[^>]*>.*?</a>\\.?", "") // links into MAT's UI
+        .replaceAll("(?i)<li[^>]*>", "\n- ")
+        .replaceAll("(?i)</?(p|ul|ol|div|br|h[1-6]|tr|table)[^>]*>", "\n")
+        .replaceAll("(?s)<[^>]*>", "")
+        .replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'")
+        .replace("&nbsp;", " ").replace("&amp;", "&");
+    return text.replaceAll("[ \\t]+\\n", "\n").replaceAll("\\n\\s*\\n- ", "\n- ").replaceAll("\\n{3,}", "\n\n")
+        .trim();
+  }
+
+  /** Runs the command of a report part, if mat_query would allow it. Returns null if it cannot be shown. */
+  private IResult runPartCommand(StringBuilder sb, ISnapshot snapshot, String command) {
+    try {
+      ObjectTools.checkAllowed(command, snapshot);
+      return SnapshotQuery.parse(command, snapshot).execute(listener);
+    } catch (Exception e) {
+      sb.append("(not shown: ").append(cell(command)).append(": ").append(e.getMessage()).append(")\n\n");
+      return null;
+    }
+  }
+
+  private static void heading(StringBuilder sb, String name, int level) {
+    if (name == null || name.trim().isEmpty()) {
+      return;
+    }
+    for (int i = 0; i < Math.min(level, 6); i++) {
+      sb.append('#');
+    }
+    sb.append(' ').append(cell(name)).append("\n\n");
   }
 
   private void renderTable(StringBuilder sb, RefinedTable table) {
