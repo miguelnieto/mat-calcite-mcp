@@ -54,6 +54,15 @@ The server speaks MCP on stdin/stdout, so Docker runs it with `-i` and no TTY.
 Results show objects as `class @ 0xaddress`, and the object tools take those addresses, so the assistant can chain
 calls: find the biggest maps with `sql_query`, then ask `path_to_gc_roots` why one is alive.
 
+### Guides for the assistant
+
+- [`docs/querying.md`](docs/querying.md): the SQL dialect, the table functions, the Calcite features that work
+  (`QUALIFY`, `ASOF JOIN`, window frames, bitwise operators) and those that don't, and investigation recipes. Every
+  query in it was run against a real dump.
+- [`skills/mat-heap-analysis`](skills/mat-heap-analysis/SKILL.md): the same as a short Claude Code skill. Copy the
+  folder to `~/.claude/skills/` (or a project's `.claude/skills/`) and the assistant loads it when you ask about a
+  heap dump.
+
 ### Files it writes
 
 - **MAT's index files:** opening a dump writes them next to it, so a dump's directory must be writable. The first

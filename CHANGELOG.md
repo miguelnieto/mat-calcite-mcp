@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- Documentation for assistants: `docs/querying.md` (SQL dialect, table functions, recipes, what doesn't work) and a
+  `mat-heap-analysis` Claude Code skill in `skills/`.
+
 ## [0.1.0] - 2026-11-07
 
 First release.
