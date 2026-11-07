@@ -13,22 +13,32 @@ inside a MAT installation instead.
 
 ## Requirements
 
-Java 17 or newer. Nothing else.
+Java 17 or newer, or Docker. Nothing else.
+
+## Install
+
+Either:
+- **Jar:** download `mat-calcite-mcp-<version>.jar` from the
+  [releases](https://github.com/miguelnieto/mat-calcite-mcp/releases). Each release also has the jar's SHA-256.
+- **Container image:** `docker pull ghcr.io/miguelnieto/mat-calcite-mcp:<version>` (amd64 and arm64; `latest` is
+  the newest release).
 
 ## Use it
 
-Build the jar (see below), then register it with your MCP client. For Claude Code:
+Register the server with your MCP client. For Claude Code, with the jar:
 
-    claude mcp add mat-sql -- java -Xmx4g -jar /path/to/mat-calcite-mcp.jar
+    claude mcp add mat-sql -- java -Xmx4g -jar /path/to/mat-calcite-mcp-<version>.jar
 
-The server speaks MCP on stdin/stdout. Give it heap with `-Xmx`, as for MAT itself: about as much as the dump's
-size is a reasonable start.
+or with Docker:
 
-With Docker (the image is built from the jar, see the `Dockerfile`):
+    claude mcp add mat-sql -- docker run -i --rm --user "$(id -u):$(id -g)" -v /path/to/dumps:/dumps ghcr.io/miguelnieto/mat-calcite-mcp:<version>
 
-    docker run -i --rm -v /path/to/dumps:/dumps -e JAVA_TOOL_OPTIONS=-Xmx4g mat-calcite-mcp
+The server speaks MCP on stdin/stdout, so Docker runs it with `-i` and no TTY.
 
-and ask the assistant to open `/dumps/<file>.hprof`.
+- **Heap:** MAT needs about as much heap as the dump's size. With the jar, set `-Xmx`. With Docker, the heap is
+  75% of the container's memory limit (`--memory 8g`), or set `-e JAVA_TOOL_OPTIONS=-Xmx4g`.
+- **Dumps in Docker:** the assistant opens them as `/dumps/<file>.hprof`. The folder must be writable, since MAT
+  writes its index files there; `--user` makes them yours rather than root's.
 
 ### Tools
 

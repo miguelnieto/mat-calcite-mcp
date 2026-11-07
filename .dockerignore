@@ -1,0 +1,3 @@
+# The image needs only the runnable jar
+*
+!server/build/distributions/executable/mat-calcite-mcp.jar
