@@ -88,6 +88,7 @@ Columns whose names are not plain identifiers must be quoted: `"@class"`. Field 
 | Function | Returns |
 |---|---|
 | `toString(x)` | text of the object (a `String`'s content, for example) |
+| `getStringContent(x, limit)` | a `String`'s text cut to `limit` characters, ending in `...`; null for other objects. The `limit` is required |
 | `getType(x)` | class name of the object |
 | `getAddress(x)`, `getHexAddress(x)` | address as a number, or as `0x…` text |
 | `getId(x)` | MAT's internal object id |
@@ -259,7 +260,6 @@ Also available: `DUAL` (`select 1 from dual`), `cross apply`, `explain plan for 
   `char_length`.
 - **Lateral column aliases.** `select retainedSize(this) r, r / 1024 kb` fails with "Column 'r' not found". Repeat
   the expression or use a sub-query.
-- **`getStringContent(x)`** appears in the function list but is rejected for an object argument; use `toString(x)`.
 - **`instanceof` on interfaces** (see [Tables](#tables)).
 
 ## Recipes
@@ -336,8 +336,13 @@ select thread, depth, text from native.ThreadStackFrames where text like '%MySer
 
 ## Gotchas
 
-- **Unknown tables.** A misspelled or wrong-case table name can fail with a raw `ArrayIndexOutOfBoundsException`
-  instead of "table not found". Check the name with `list_tables`.
+- **Wrong-case table names.** A name that does not exist fails with a normal error (`Object 'X' not found`). A
+  schema-path name whose last part has the wrong case, such as `java.util.Hashmap` or `instanceof.java.util.Hashmap`,
+  fails with a raw `ArrayIndexOutOfBoundsException: Index 4 out of bounds for length 4` (the message can also be
+  `null`). It is a bug in Calcite's "did you mean" hint, which miscounts the `HEAP` schema every name is resolved
+  in; it does not hide another error. `java.Util.HashMap` gets a wrong hint for the same reason. Write the whole
+  name in quotes (`"java.util.Hashmap"`) to get a correct "did you mean 'java.util.HashMap'", or look the name up
+  with `list_tables` and a `filter`.
 - **Quote everything that is not a plain word.** `$` in names, SQL words as package parts, `value`, `@class`.
 - **Big scans take time.** Queries over huge classes (`java.lang.String`, `byte[]`) with `retainedSize` or
   `toString` can run long; every call takes `timeout_seconds` (default 300), and `cancel_query` stops it.

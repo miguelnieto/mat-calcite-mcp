@@ -34,12 +34,15 @@ Long calls take `timeout_seconds`; `cancel_query` stops one.
 - One table per class, quoted: `"java.lang.String"`, or as a path `java.util.HashMap`, `java.util."HashMap$Node"`.
   `instanceof.java.util.AbstractMap` includes subclasses (superclasses only: interfaces are not recorded, so
   `instanceof."java.util.Map"` is empty). Arrays: `"long[]"`. Thread stacks: `native.ThreadStackFrames`.
-- Names are case-sensitive. Quote SQL words (`"java.util.Date"`, `e."value"`). A wrong table name can give a raw
-  `ArrayIndexOutOfBoundsException`; check with `list_tables` and `filter`.
+- Names are case-sensitive. Quote SQL words (`"java.util.Date"`, `e."value"`). A path name with only the last part
+  in the wrong case (`java.util.Hashmap`) gives a raw `ArrayIndexOutOfBoundsException`, a Calcite bug in its "did
+  you mean" hint: it is not another problem. Quote the whole name (`"java.util.Hashmap"`) for a correct hint, or
+  use `list_tables` with `filter`.
 - `this` is the object. Virtual columns: `this['@retained']`, `this['@shallow']`, `this['@className']`,
   `this['@class']['@classLoader']`; fields are columns or `this['field.path']`.
 - Functions: `toString`, `getType`, `getAddress`, `getHexAddress`, `shallowSize`, `retainedSize`, `getDominator`,
-  `getSize`, `length`, `getField`, `getStaticField(this['@class'], 'name')`, `getByKey(map, 'key')`, `toDateTime`.
+  `getSize`, `length`, `getStringContent(x, limit)` (the limit is required), `getField`,
+  `getStaticField(this['@class'], 'name')`, `getByKey(map, 'key')`, `toDateTime`.
 - Table functions need `lateral table(...)`: `getOutboundReferences(x)` (name, this), `getInboundReferences(x)`,
   `getRetainedSet(x)`, `getValues(x)`, `getMapEntries(x)` (key, "value").
 - Converters: `asMap(x)['k']`, `unnest(asMultiSet(x)) e(el)` (do not alias to `ref`), `asLongArray(x)[1]` (SQL arrays
@@ -47,7 +50,7 @@ Long calls take `timeout_seconds`; `cancel_query` stops one.
 - Works: `QUALIFY`, window functions with `exclude current row`, `ASOF JOIN`, bitwise `&` `^` `<<` on addresses,
   `like`, `similar to`, `substring`, `position`, `upper`, `char_length`, `cross apply`, `dual`.
 - Does not work: library functions (`SPLIT_PART`, `STARTS_WITH`, `REGEXP_REPLACE`, `REVERSE`), lateral column aliases
-  (use a sub-query), `getStringContent` on an object (use `toString`).
+  (use a sub-query).
 
 ## Recipes
 
