@@ -9,7 +9,7 @@ It runs headless from one jar, `java -jar mat-calcite-mcp.jar`, with no MAT inst
 heap-dump engine runs unchanged in a minimal OSGi framework (Equinox).
 
 It's derived from the MCP server of [mat-calcite-plugin](https://github.com/vlsi/mat-calcite-plugin), which runs
-inside a MAT installation instead.
+inside a MAT installation instead. See [Acknowledgements](#acknowledgements).
 
 ## Requirements
 
@@ -117,6 +117,17 @@ Any JDK 17 or newer builds it; the bytecode is Java 17.
 
 To change a dependency, update its version, then regenerate the checksums with
 `./gradlew --write-verification-metadata sha256 check :server:export`. Review the new entries before committing.
+
+## Acknowledgements
+
+Much of the work, and the idea, come from [mat-calcite-plugin](https://github.com/vlsi/mat-calcite-plugin) by
+Vladimir Sitnikov: the Calcite schema that turns a heap dump into SQL tables, the heap functions and the table
+functions are its. That project is an Eclipse Memory Analyzer plugin with a user interface (a SQL editor, a schema
+browser, content assist), and it is the one to use when you want to explore a dump by hand inside MAT.
+
+This project keeps only the headless part, as a standalone server for AI assistants, with no UI and no MAT
+installation. That keeps it small and simple to run, and it may suit unattended runs such as a CI pipeline better,
+where there is no desktop to open MAT on.
 
 ## License
 
