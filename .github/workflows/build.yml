@@ -16,15 +16,15 @@ jobs:
     name: ${{ matrix.os }}, Java ${{ matrix.java }}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Build, test inside Equinox and export the runnable jar
         run: ./gradlew --console=plain check :server:export
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: matrix.os == 'ubuntu-latest' && matrix.java == 17
         with:
           name: mat-calcite-mcp
