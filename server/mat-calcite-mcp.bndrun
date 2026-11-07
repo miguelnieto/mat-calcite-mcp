@@ -1,0 +1,44 @@
+# The MCP server: Equinox with the server bundle and the headless part of MAT. The parser and hprof bundles are
+# listed explicitly because MAT finds them through the extension registry, not through package imports, and Felix
+# SCR because it runs the Declarative Services components of the Eclipse runtime (the content type manager).
+-runfw: org.eclipse.osgi
+-runee: JavaSE-17
+-runrequires: \
+    bnd.identity;id='io.github.miguelnieto.matcalcitemcp',\
+    bnd.identity;id='org.eclipse.mat.parser',\
+    bnd.identity;id='org.eclipse.mat.hprof',\
+    bnd.identity;id='org.eclipse.equinox.registry',\
+    bnd.identity;id='org.eclipse.core.runtime',\
+    bnd.identity;id='org.apache.felix.scr'
+
+# MAT and the Eclipse runtime keep preferences and logs in the instance area, ~/.mat-calcite-mcp/workspace unless
+# -Dosgi.instance.area=<dir> says otherwise. Equinox expands @user.home from its own configuration, which includes
+# the JVM's system properties only with useSystemProperties.
+-runproperties: \
+    osgi.framework.useSystemProperties=true,\
+    osgi.instance.area.default=@user.home/.mat-calcite-mcp/workspace,\
+    osgi.configuration.area.default=@user.home/.mat-calcite-mcp/configuration
+-runbundles: \
+	org.osgi.service.component;version='[1.5.1,1.5.2)',\
+	org.osgi.service.prefs;version='[1.1.2,1.1.3)',\
+	org.osgi.util.function;version='[1.2.0,1.2.1)',\
+	org.osgi.util.promise;version='[1.3.0,1.3.1)',\
+	io.github.miguelnieto.matcalcitemcp;version='[0.1.0,0.1.1)',\
+	com.sun.jna;version='[5.18.1,5.18.2)',\
+	com.sun.jna.platform;version='[5.18.1,5.18.2)',\
+	org.apache.felix.scr;version='[2.2.18,2.2.19)',\
+	org.eclipse.core.commands;version='[3.12.500,3.12.501)',\
+	org.eclipse.core.contenttype;version='[3.9.800,3.9.801)',\
+	org.eclipse.core.expressions;version='[3.9.600,3.9.601)',\
+	org.eclipse.core.filesystem;version='[1.11.400,1.11.401)',\
+	org.eclipse.core.jobs;version='[3.15.800,3.15.801)',\
+	org.eclipse.core.resources;version='[3.24.0,3.24.1)',\
+	org.eclipse.core.runtime;version='[3.34.200,3.34.201)',\
+	org.eclipse.equinox.app;version='[1.7.600,1.7.601)',\
+	org.eclipse.equinox.common;version='[3.20.400,3.20.401)',\
+	org.eclipse.equinox.preferences;version='[3.12.100,3.12.101)',\
+	org.eclipse.equinox.registry;version='[3.12.600,3.12.601)',\
+	org.eclipse.mat.api;version='[1.17.0,1.17.1)',\
+	org.eclipse.mat.hprof;version='[1.17.0,1.17.1)',\
+	org.eclipse.mat.parser;version='[1.17.0,1.17.1)',\
+	org.eclipse.mat.report;version='[1.17.0,1.17.1)'

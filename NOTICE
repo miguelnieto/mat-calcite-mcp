@@ -1,0 +1,35 @@
+mat-calcite-mcp
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This project is derived from the Calcite SQL plugin for Eclipse Memory Analyzer, mat-calcite-plugin by
+Vladimir Sitnikov (https://github.com/vlsi/mat-calcite-plugin), licensed under the Apache License, Version 2.0.
+The SQL schema, the heap functions and the MCP server code under server/src/main/java/com/github/vlsi/ come from
+that project.
+
+The runnable jar (mat-calcite-mcp.jar) bundles the following third-party software, each under its own license:
+
+Eclipse Public License 2.0 (https://www.eclipse.org/legal/epl-2.0/)
+  - Eclipse Memory Analyzer 1.17.0: org.eclipse.mat.parser, .hprof, .report, as released; and
+    org.eclipse.mat.api 1.17.0.202606011933-java17, compiled for Java 17 by this project from Eclipse MAT's
+    unmodified source at commit 8a2a95b9ffa13ff2f7d137100bc11484ac5b8203
+    (https://github.com/eclipse-mat/mat/tree/8a2a95b9ffa13ff2f7d137100bc11484ac5b8203/plugins/org.eclipse.mat.api).
+    Its class files are compiled by javac for Java 17 (MAT's build uses Eclipse's compiler, for Java 21); all
+    other content is the released bundle's, except the manifest's Bundle-Version and Require-Capability, and
+    the signature, which is removed.
+  - Eclipse Platform 4.40 runtime: org.eclipse.osgi, org.eclipse.core.runtime, .jobs, .contenttype,
+    .resources, .filesystem, .commands, .expressions, org.eclipse.equinox.registry, .common, .app, .preferences
+
+Apache License 2.0
+  - Apache Calcite and Calcite Avatica, Apache Felix SCR, Apache Commons (Codec, Lang, Math, Text),
+    Apache HttpComponents (Client, Core), Google Guava, Jackson Core, Jayway JsonPath, json-smart and
+    accessors-smart, jOOU, OSGi Alliance API bundles (service.component, service.prefs, util.promise,
+    util.function)
+
+Other licenses
+  - JNA 5.18: Apache License 2.0 or LGPL 2.1, at your choice
+  - JTS Topology Suite 1.19: Eclipse Public License 2.0 or Eclipse Distribution License 1.0
+  - Protocol Buffers (protobuf-java) 3.25: BSD 3-Clause
+  - Janino and commons-compiler 3.1: BSD 3-Clause
+  - SLF4J API 2.0: MIT
+
+Verify each license against the component's own distribution before publishing a release.

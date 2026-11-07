@@ -1,0 +1,13 @@
+Bundle-SymbolicName: io.github.miguelnieto.matcalcitemcp
+Bundle-Name: MAT Calcite MCP server
+Bundle-Version: 0.1.0.${tstamp}
+Bundle-Activator: io.github.miguelnieto.matcalcitemcp.McpActivator
+Bundle-ClassPath: .,${embedded.jars}
+
+# MAT and the Eclipse runtime are wired as usual. The embedded jars reference many packages they use only in
+# features this server never touches (Calcite's adapters for external databases, Jackson databind...), so every
+# other import is optional.
+Import-Package: \
+    org.eclipse.*,\
+    org.osgi.*,\
+    *;resolution:=optional

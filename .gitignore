@@ -1,0 +1,12 @@
+.gradle/
+.kotlin/
+build/
+*/build/
+# IDEs
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+bin/
