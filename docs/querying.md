@@ -18,6 +18,7 @@ described are what it did. Object addresses and counts differ in your dump.
 - [SQL features that work](#sql-features-that-work)
 - [What does not work](#what-does-not-work)
 - [Recipes](#recipes)
+- [MAT commands with `mat_query`](#mat-commands-with-mat_query)
 - [Gotchas](#gotchas)
 
 ## Workflow
@@ -331,8 +332,74 @@ select thread, depth, text from native.ThreadStackFrames where text like '%MySer
 
 ### Other MAT reports
 
-`mat_query` runs any MAT command line that does not read or write files: `top_consumers`, `find_leaks`,
-`dominator_tree`, `histogram`, and so on. Its output is MAT's own text or table.
+See [MAT commands with `mat_query`](#mat-commands-with-mat_query).
+
+## MAT commands with `mat_query`
+
+`mat_query` runs one MAT command line, as typed in MAT's command line or its query browser. Commands come from Eclipse
+MAT 1.17; there is no `help` command, so this is the list of the ones checked against the container image.
+
+How a command line is written:
+
+- `command [objects] [-option value]...`. Options have the names shown below; an unknown one fails with
+  `Query '<name>' has no argument '<option>'`.
+- Where a command takes **objects**, give addresses (`0x708063870`, several separated by spaces) or a regular
+  expression for class names (`java.util.Hash.*`). In a regular expression, escape brackets for arrays:
+  `java.lang.Object\[\]`.
+- `max_rows`, `depth` and `max_children` of the tool limit the output.
+
+### Memory by class, package and class loader
+
+| Command | What it shows |
+|---|---|
+| `histogram [regex] [-groupBy BY_CLASS\|BY_SUPERCLASS\|BY_CLASSLOADER\|BY_PACKAGE]` | objects and shallow heap per class, or per package, loader or superclass |
+| `dominator_tree [-groupBy NONE\|BY_CLASS\|BY_CLASSLOADER\|BY_PACKAGE]` | retained heap of the biggest objects, or summed per class, package or loader |
+| `top_consumers` | biggest objects, classes, class loaders and packages in one report |
+| `unreachable_objects` | objects no GC root reaches, per class |
+
+### Why something is alive, and what it holds
+
+| Command | What it shows |
+|---|---|
+| `path2gc <address> [-numberOfPaths n] [-excludes class:field ...]` | paths from GC roots; the `path_to_gc_roots` tool |
+| `merge_shortest_paths <objects> [-groupBy FROM_GC_ROOTS\|FROM_GC_ROOTS_BY_CLASS\|FROM_OBJECTS_BY_CLASS]` | the shortest paths of **many** objects merged into one tree: why are these 50 objects alive |
+| `gc_roots` | GC roots by type (system class, JNI global...) and the classes under each |
+| `immediate_dominators <objects> [-skip regex]` | who keeps them alive exclusively; the `immediate_dominators` tool |
+| `show_dominator_tree <address>` | what the object dominates, as a tree |
+| `show_retained_set <objects>` | what they keep alive, by class; the `retained_set` tool |
+| `list_objects <objects> [-inbound]` | what they reference, or who references them; the `list_references` tool |
+| `class_references <regex> [-inbound]` | the same for all instances of a class, grouped by class |
+| `big_drops_in_dominator_tree` | objects where the retained heap drops sharply: where the memory piles up |
+| `find_leaks [-threshold_percent n]` | leak suspects as a table (the `leak_suspects` tool adds the paths and stacks) |
+
+### Collections, arrays and strings
+
+| Command | What it shows |
+|---|---|
+| `collection_fill_ratio <regex>` | collections by how full they are, with the wasted heap |
+| `map_collision_ratio <regex>` | hash maps by collision ratio |
+| `array_fill_ratio <regex>` | arrays by share of non-null slots |
+| `collections_grouped_by_size <regex>`, `arrays_grouped_by_size <regex>` | how many collections or arrays have each length |
+| `hash_entries <address>` | the key/value pairs of a hash map |
+| `extract_list_values <address>` | the elements of a list |
+| `group_by_value <regex>` | objects grouped by their text, e.g. `java.lang.String` |
+| `find_strings <regex> -pattern <regex>` | strings whose text matches `-pattern` |
+| `oql "select ... from ..."` | MAT's own OQL query language |
+| `system_properties` | the `System` properties of the dumped JVM |
+| `thread_overview [address]`, `thread_stack <address>` | threads, state and stack frames, with the memory their locals hold |
+| `duplicate_classes`, `waste_in_char_arrays -minimumWaste n`, `primitive_arrays_with_a_constant_value <regex>` | ran without error; each lists nothing when the dump has no match |
+
+### What `mat_query` does not give you
+
+- **Commands that need a file** are refused, because the server must not write files through MAT:
+  `export_hprof`, `create_report`, `default_report`, `delta_histogram` (use `compare_dumps`), and any command with a
+  file-valued option, including `customized_retained_set`, `find_leaks2` and `leakhunter2`. The check looks at the
+  command's definition, not at what you pass.
+- **A few commands return only a placeholder** such as `SectionSpec: …@2d62cff3`, because the server cannot
+  render their result yet: `thread_details`, `weak_references_statistics`, `soft_references_statistics`,
+  `phantom_references_statistics`, `finalizer_overview` and `leakhunter`. Use `thread_overview` and `thread_stack`,
+  and the `leak_suspects` and `find_leaks` outputs, instead.
+- `top_consumers` rejected the option names I tried for its threshold; run it without options.
 
 ## Gotchas
 

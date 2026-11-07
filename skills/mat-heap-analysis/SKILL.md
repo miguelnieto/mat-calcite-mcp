@@ -109,7 +109,14 @@ select p.this, e.key, e."value" from java.util.Properties p, lateral table(getMa
 
 **Growth**: open the baseline and the current dump, then `compare_dumps` with `baseline` set to the baseline path.
 
-**Any MAT report**: `mat_query` with `top_consumers`, `find_leaks`, `dominator_tree`, `histogram`.
+**Any other MAT command**: `mat_query` with a command line, e.g. `merge_shortest_paths 0xA 0xB 0xC` (why are these
+objects alive, merged into one tree), `histogram -groupBy BY_PACKAGE`, `dominator_tree -groupBy BY_CLASSLOADER`,
+`gc_roots`, `thread_overview`, `collection_fill_ratio java.util.HashMap`, `map_collision_ratio java.util.HashMap`,
+`class_references java.net.URL -inbound`, `big_drops_in_dominator_tree`, `unreachable_objects`,
+`oql "select * from java.util.Properties"`. Objects are addresses or a class-name regex (escape array brackets:
+`java.lang.Object\[\]`). Commands that read or write files are refused; `thread_details`, `leakhunter`,
+`finalizer_overview` and the `*_references_statistics` commands return only a placeholder. The full list is in
+`docs/querying.md`.
 
 ## More
 
