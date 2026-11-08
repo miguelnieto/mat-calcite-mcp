@@ -12,6 +12,7 @@ import org.junit.runners.Suite;
     RowSetTableTests.class,
     SqlForObjectsTests.class,
     McpServerTests.class,
+    HeapInspectionsTests.class,
     DateFunctionsTests.class,
     QueryCancellationTests.class
 })

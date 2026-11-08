@@ -82,194 +82,29 @@ final class AnalysisTools {
 
   // ---------------------------------------------------------------- leak_suspects
 
-  /**
-   * Uses only public API: MAT's find_leaks result is an {@code IResultTable} whose columns are suspect, number of
-   * objects, retained heap, share, accumulation point and its size and share, and whose context providers give the
-   * suspect (a set for a group of objects) and the accumulation point. ({@code FindLeaksQuery} itself lives in a
-   * friend-restricted package.)
-   */
-  static String leakSuspects(ISnapshot snapshot, int thresholdPercent, int maxSuspects, Cancellation cancellation)
-      throws Exception {
-    IResult result = SnapshotQuery.lookup("find_leaks", snapshot)
-        .setArgument("threshold_percent", thresholdPercent)
-        .execute(cancellation.listener());
-    long total = snapshot.getSnapshotInfo().getUsedHeapSize();
-    if (!(result instanceof IResultTable) || ((IResultTable) result).getRowCount() == 0) {
-      return "No leak suspect retains more than " + thresholdPercent + "% of the heap (" + total + " bytes). "
-          + "Lower threshold_percent, or look at heap_overview for the biggest objects.";
-    }
-    IResultTable table = (IResultTable) result;
-    List<ContextProvider> contexts = table.getResultMetaData() == null ? null
-        : table.getResultMetaData().getContextProviders();
-    StringBuilder sb = new StringBuilder();
-    sb.append(table.getRowCount()).append(table.getRowCount() == 1 ? " suspect" : " suspects")
-        .append(" retaining more than ").append(thresholdPercent).append("% of the heap (").append(total)
-        .append(" bytes):\n");
-    for (int i = 0; i < Math.min(maxSuspects, table.getRowCount()); i++) {
-      Object row = table.getRow(i);
-      long objects = number(table.getColumnValue(row, 1));
-      long retained = number(table.getColumnValue(row, 2));
-      IContextObject suspect = contexts != null && contexts.size() > 0 ? contexts.get(0).getContext(row)
-          : table.getContext(row);
-      IContextObject point = contexts != null && contexts.size() > 1 ? contexts.get(1).getContext(row) : null;
-      sb.append("\n## Suspect ").append(i + 1).append(": ");
-      boolean group = suspect instanceof IContextObjectSet && objects > 1;
-      IObject first = snapshot.getObject(suspect.getObjectId());
-      if (group) {
-        sb.append(objects).append(" instances of ").append(className(first));
-      } else {
-        sb.append(first.getDisplayName());
-      }
-      sb.append("\nretains ").append(retained).append(" bytes (").append(percent(retained, total))
-          .append(" of the heap)\n");
-      sb.append("class loader: ").append(classLoader(snapshot, first)).append('\n');
-      IObject accumulation = point != null && point.getObjectId() >= 0 ? snapshot.getObject(point.getObjectId())
-          : null;
-      if (accumulation != null) {
-        sb.append("accumulation point (where the memory piles up): ").append(accumulation.getDisplayName())
-            .append(", retains ").append(snapshot.getRetainedHeapSize(point.getObjectId())).append(" bytes\n");
-      } else if (group) {
-        sb.append("accumulation point: none, no single object holds the group; each instance is kept alive on "
-            + "its own\n");
-      }
-      if (group) {
-        appendBiggest(sb, snapshot, ((IContextObjectSet) suspect).getObjectIds());
-      } else {
-        sb.append("path from a GC root:\n").append(pathToRoot(snapshot, suspect.getObjectId(), cancellation));
-      }
-      if (accumulation != null && point.getObjectId() != suspect.getObjectId()) {
-        sb.append("path from a GC root to the accumulation point (who holds the memory):\n")
-            .append(pathToRoot(snapshot, point.getObjectId(), cancellation));
-      }
-      // A thread's memory is held by its stack: show which frames and local variables hold it
-      IObject thread = isThread(first) ? first : accumulation != null && isThread(accumulation) ? accumulation : null;
-      if (thread != null) {
-        appendThreadStack(sb, snapshot, thread);
-      }
-    }
-    sb.append("\nNext: retained_set or collection_contents on an accumulation point, path_to_gc_roots on a suspect.");
-    return sb.toString();
-  }
-
-  private static final int BIGGEST_INSTANCES = 5;
-  private static final int MAX_FRAMES = 40;
-  private static final int LOCALS_PER_FRAME = 3;
-  private static final int MAX_LABEL = 120;
-
-  private static String classLoader(ISnapshot snapshot, IObject object) throws SnapshotException {
-    IClass clazz = object instanceof IClass ? (IClass) object : object.getClazz();
-    int loader = clazz.getClassLoaderId();
-    return loader < 0 ? "(unknown)" : snapshot.getObject(loader).getDisplayName();
-  }
-
-  /**
-   * The members of a group suspect that retain the most, as starting points for path_to_gc_roots. A group can
-   * have millions of members, so only the biggest few are kept while scanning.
-   */
-  private static void appendBiggest(StringBuilder sb, ISnapshot snapshot, int[] ids) throws SnapshotException {
-    PriorityQueue<long[]> biggest = new PriorityQueue<>(Comparator.comparingLong((long[] s) -> s[0]));
-    for (int id : ids) {
-      checkCancelled();
-      long retained = snapshot.getRetainedHeapSize(id);
-      if (biggest.size() < BIGGEST_INSTANCES || retained > biggest.peek()[0]) {
-        biggest.add(new long[] {retained, id});
-        if (biggest.size() > BIGGEST_INSTANCES) {
-          biggest.poll();
-        }
-      }
-    }
-    List<long[]> shown = new ArrayList<>(biggest);
-    shown.sort(Comparator.comparingLong((long[] s) -> s[0]).reversed());
-    sb.append("biggest instances:\n");
-    for (long[] s : shown) {
-      sb.append("  ").append(label(snapshot.getObject((int) s[1]))).append(", retains ").append(s[0])
-          .append(" bytes\n");
-    }
-    if (ids.length > shown.size()) {
-      sb.append("  ... ").append(ids.length - shown.size()).append(" more\n");
-    }
-  }
-
-  /** The shortest strong path from a GC root, or a note when weak or soft references are the only holders. */
-  private static String pathToRoot(ISnapshot snapshot, int id, Cancellation cancellation) throws Exception {
-    String path = run(snapshot, "path2gc -numberOfPaths 1 " + hex(snapshot, id), new MatResultRenderer(30, 30, 1),
-        cancellation);
-    GCRootInfo[] roots = snapshot.getGCRootInfo(id);
-    if (path.trim().endsWith("\n1 row") && (roots == null || roots.length == 0)) {
-      path += "\n(no strong path: only weak, soft or finalizer references keep it; the JVM can free it under memory "
-          + "pressure; list_references incoming shows what references it)";
-    }
-    return path + "\n";
-  }
-
-  /** The object's label, cut short: the label of a byte[] or char[] holds its contents. */
-  private static String label(IObject object) {
-    String name = object.getDisplayName();
-    return name.length() > MAX_LABEL ? name.substring(0, MAX_LABEL) + "..." : name;
-  }
-
-  private static boolean isThread(IObject object) {
-    if (object instanceof IClass) {
-      return false;
-    }
-    for (IClass c = object.getClazz(); c != null; c = c.getSuperClass()) {
-      if ("java.lang.Thread".equals(c.getName())) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** The thread's stack, each frame with the local variables that retain the most. */
-  private static void appendThreadStack(StringBuilder sb, ISnapshot snapshot, IObject thread)
-      throws SnapshotException {
-    IThreadStack stack = snapshot.getThreadStack(thread.getObjectId());
-    if (stack == null || stack.getStackFrames() == null || stack.getStackFrames().length == 0) {
-      sb.append("thread stack: not in the dump\n");
-      return;
-    }
-    IStackFrame[] frames = stack.getStackFrames();
-    long threadRetained = snapshot.getRetainedHeapSize(thread.getObjectId());
-    sb.append("thread stack of ").append(label(thread)).append(", with the local variables that retain at least 1% "
-        + "of the thread's ").append(threadRetained).append(" bytes:\n");
-    int shown = Math.min(MAX_FRAMES, frames.length);
-    for (int f = 0; f < shown; f++) {
-      sb.append("  ").append(frames[f].getText()).append('\n');
-      int[] locals = frames[f].getLocalObjectsIds();
-      if (locals == null || locals.length == 0) {
-        continue;
-      }
-      // Each object once, and only those that hold a noticeable part of what the thread retains
-      List<long[]> sizes = new ArrayList<>();
-      for (int local : java.util.Arrays.stream(locals).distinct().toArray()) {
-        long size = snapshot.getRetainedHeapSize(local);
-        if (size * 100 >= threadRetained) {
-          sizes.add(new long[] {size, local});
-        }
-      }
-      sizes.sort((a, b) -> Long.compare(b[0], a[0]));
-      for (int i = 0; i < Math.min(LOCALS_PER_FRAME, sizes.size()); i++) {
-        sb.append("      local ").append(label(snapshot.getObject((int) sizes.get(i)[1]))).append(", retains ")
-            .append(sizes.get(i)[0]).append(" bytes\n");
-      }
-      if (sizes.size() > LOCALS_PER_FRAME) {
-        sb.append("      ... ").append(sizes.size() - LOCALS_PER_FRAME).append(" more locals\n");
-      }
-    }
-    if (frames.length > shown) {
-      sb.append("  ... ").append(frames.length - shown).append(" more frames\n");
-    }
+  /** MAT's leak suspects as text, or as JSON with the raw numbers; see {@link LeakSuspectsReport}. */
+  static String leakSuspects(ISnapshot snapshot, int thresholdPercent, int maxSuspects, boolean json,
+                             Cancellation cancellation) throws Exception {
+    return LeakSuspectsReport.run(snapshot, thresholdPercent, maxSuspects, json, cancellation);
   }
 
   /** A numeric cell of a MAT result, which holds sizes as {@link Bytes}. */
-  private static long number(Object value) {
+  static long number(Object value) {
     if (value instanceof Bytes) {
       return ((Bytes) value).getValue();
     }
     return value instanceof Number ? ((Number) value).longValue() : 0;
   }
 
-  private static String className(IObject object) {
+  /** The object's label, cut short: the label of a byte[] or char[] holds its contents. */
+  private static final int MAX_LABEL = 120;
+
+  private static String label(IObject object) {
+    String name = object.getDisplayName();
+    return name.length() > MAX_LABEL ? name.substring(0, MAX_LABEL) + "..." : name;
+  }
+
+  static String className(IObject object) {
     return object instanceof IClass ? ((IClass) object).getName() : object.getClazz().getName();
   }
 
@@ -683,7 +518,18 @@ final class AnalysisTools {
    * text of the values shown is read again from an example object. Two values share a hash with odds of about
    * n^2 / 2^65 for n distinct values, negligible here.
    */
-  static String duplicateStrings(ISnapshot snapshot, int minCopies, int maxRows) throws Exception {
+  /** What a scan for duplicated strings found. */
+  static final class DuplicateStringsScan {
+    long strings;
+    long retainedTotal;
+    int distinctValues;
+    /** The values with at least the minimum number of copies: {copies, retained sum, min retained, sample id}. */
+    List<long[]> duplicates = new ArrayList<>();
+    long duplicatedStrings;
+    long wastedTotal;
+  }
+
+  static DuplicateStringsScan scanDuplicateStrings(ISnapshot snapshot, int minCopies) throws Exception {
     // value hash -> {copies, retained sum, min retained, sample id}
     HashMapLongObject<long[]> values = new HashMapLongObject<>();
     long strings = 0;
@@ -709,21 +555,32 @@ final class AnalysisTools {
         }
       }
     }
-    List<long[]> duplicates = new ArrayList<>();
-    long duplicatedStrings = 0;
-    long wastedTotal = 0;
+    DuplicateStringsScan scan = new DuplicateStringsScan();
+    scan.strings = strings;
+    scan.retainedTotal = retainedTotal;
+    scan.distinctValues = values.size();
     for (Iterator<long[]> it = values.values(); it.hasNext(); ) {
       long[] stats = it.next();
       if (stats[0] >= minCopies) {
-        duplicates.add(stats);
-        duplicatedStrings += stats[0];
-        wastedTotal += stats[1] - stats[2];
+        scan.duplicates.add(stats);
+        scan.duplicatedStrings += stats[0];
+        scan.wastedTotal += stats[1] - stats[2];
       }
     }
-    duplicates.sort(Comparator.comparingLong((long[] stats) -> stats[1] - stats[2]).reversed());
+    scan.duplicates.sort(Comparator.comparingLong((long[] stats) -> stats[1] - stats[2]).reversed());
+    return scan;
+  }
+
+  static String duplicateStrings(ISnapshot snapshot, int minCopies, int maxRows) throws Exception {
+    DuplicateStringsScan scan = scanDuplicateStrings(snapshot, minCopies);
+    List<long[]> duplicates = scan.duplicates;
+    long strings = scan.strings;
+    long retainedTotal = scan.retainedTotal;
+    long duplicatedStrings = scan.duplicatedStrings;
+    long wastedTotal = scan.wastedTotal;
     StringBuilder sb = new StringBuilder();
     sb.append("strings: ").append(strings).append(" (retaining ").append(retainedTotal).append(" bytes)\n")
-        .append("distinct values: ").append(values.size()).append('\n')
+        .append("distinct values: ").append(scan.distinctValues).append('\n')
         .append("values with at least ").append(minCopies).append(" copies: ").append(duplicates.size())
         .append(", covering ").append(duplicatedStrings).append(" strings\n")
         .append("wasted by the extra copies: ").append(wastedTotal).append(" bytes (")
@@ -748,7 +605,7 @@ final class AnalysisTools {
    * Bytes per object reference: 4 with compressed pointers (the default for heaps up to 32 GB), else the dump's
    * identifier size. MAT records compressed pointers as the snapshot property $useCompressedOops.
    */
-  private static int referenceSize(ISnapshot snapshot) {
+  static int referenceSize(ISnapshot snapshot) {
     Object compressed = snapshot.getSnapshotInfo().getProperty("$useCompressedOops");
     return Boolean.TRUE.equals(compressed) || "true".equals(String.valueOf(compressed)) ? 4
         : snapshot.getSnapshotInfo().getIdentifierSize();
@@ -827,7 +684,19 @@ final class AnalysisTools {
   /** The single collections listed: only this many are kept while scanning, however many there are. */
   private static final int WORST_SHOWN = 10;
 
-  static String wastefulCollections(ISnapshot snapshot, int maxRows) throws Exception {
+  /** What a scan of the collections in a dump found. */
+  static final class WastefulScan {
+    int referenceSize;
+    /** The collection classes, the most wasteful first. */
+    List<CollectionStats> classes = new ArrayList<>();
+    /** The worst single collections, the most wasteful first. */
+    List<Wasteful> worstFirst = new ArrayList<>();
+    long totalWaste;
+    long emptyCollections;
+    long collections;
+  }
+
+  static WastefulScan scanWastefulCollections(ISnapshot snapshot) throws Exception {
     int referenceSize = referenceSize(snapshot);
     List<CollectionStats> classes = new ArrayList<>();
     // The least wasteful of those kept is at the head, ready to be replaced
@@ -862,7 +731,7 @@ final class AnalysisTools {
             stats.empty++;
             stats.emptyRetained += retained;
             waste += retained;
-            why = "empty";
+            why = capacity != null && capacity > 0 ? "empty, with " + capacity + " slots allocated" : "empty";
           }
           if (capacity != null && capacity > 0) {
             double fill = size / (double) capacity;
@@ -871,7 +740,8 @@ final class AnalysisTools {
             if (fill < 0.5) {
               stats.lowFill++;
             }
-            if (capacity > size) {
+            // The slots of an empty collection are part of what it retains, which is counted above already
+            if (capacity > size && size > 0) {
               stats.unusedSlots += capacity - size;
               waste += (long) (capacity - size) * referenceSize;
               if (why == null) {
@@ -900,20 +770,34 @@ final class AnalysisTools {
         classes.add(stats);
       }
     }
-    if (classes.isEmpty()) {
+    classes.sort(Comparator.comparingLong((CollectionStats s) -> s.waste(referenceSize)).reversed());
+    WastefulScan scan = new WastefulScan();
+    scan.referenceSize = referenceSize;
+    scan.classes = classes;
+    scan.worstFirst = new ArrayList<>(worst);
+    scan.worstFirst.sort(Comparator.comparingLong((Wasteful w) -> w.waste).reversed());
+    for (CollectionStats stats : classes) {
+      scan.totalWaste += stats.waste(referenceSize);
+      scan.emptyCollections += stats.empty;
+      scan.collections += stats.count;
+    }
+    return scan;
+  }
+
+  static String wastefulCollections(ISnapshot snapshot, int maxRows) throws Exception {
+    WastefulScan scan = scanWastefulCollections(snapshot);
+    if (scan.classes.isEmpty()) {
       return "No collections found that MAT can read.";
     }
-    classes.sort(Comparator.comparingLong((CollectionStats s) -> s.waste(referenceSize)).reversed());
-    List<Wasteful> worstFirst = new ArrayList<>(worst);
-    worstFirst.sort(Comparator.comparingLong((Wasteful w) -> w.waste).reversed());
-    long totalWaste = 0;
-    for (CollectionStats stats : classes) {
-      totalWaste += stats.waste(referenceSize);
-    }
+    int referenceSize = scan.referenceSize;
+    List<CollectionStats> classes = scan.classes;
+    List<Wasteful> worstFirst = scan.worstFirst;
+    long totalWaste = scan.totalWaste;
     StringBuilder sb = new StringBuilder();
     sb.append("estimated waste: ").append(totalWaste).append(" bytes (")
         .append(percent(totalWaste, snapshot.getSnapshotInfo().getUsedHeapSize())).append(" of the heap) = what "
-        + "empty collections retain + unused slots x ").append(referenceSize).append(" bytes per reference\n\n");
+        + "empty collections retain + unused slots of the other collections x ").append(referenceSize)
+        .append(" bytes per reference\n\n");
     sb.append("| class | collections | empty | empty retain (bytes) | avg fill | under 50% full | unused slots "
         + "| avg collision ratio | est. waste (bytes) |\n|---|---|---|---|---|---|---|---|---|\n");
     for (int i = 0; i < Math.min(maxRows, classes.size()); i++) {
@@ -945,16 +829,16 @@ final class AnalysisTools {
     return renderer.render(snapshot, SnapshotQuery.parse(commandLine, snapshot).execute(cancellation.listener()));
   }
 
-  private static String hex(ISnapshot snapshot, int id) throws SnapshotException {
+  static String hex(ISnapshot snapshot, int id) throws SnapshotException {
     return "0x" + Long.toHexString(snapshot.mapIdToAddress(id));
   }
 
-  private static String percent(long part, long whole) {
+  static String percent(long part, long whole) {
     return whole == 0 ? "0%" : String.format(Locale.ROOT, "%.1f%%", 100.0 * part / whole);
   }
 
   /** The long analyses check for cancellation the way the heap object scan does. */
-  private static void checkCancelled() {
+  static void checkCancelled() {
     QueryCancellation.check();
   }
 }

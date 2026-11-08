@@ -67,7 +67,7 @@ public class McpServerTests {
   public void toolsAreListed() {
     Map<?, ?> result = (Map<?, ?>) request("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}").get("result");
     List<?> tools = (List<?>) result.get("tools");
-    Assert.assertEquals(37, tools.size());
+    Assert.assertEquals(41, tools.size());
     Assert.assertTrue(String.valueOf(tools), String.valueOf(tools).contains("\"sql_query\"")
         || String.valueOf(tools).contains("name=sql_query"));
   }
@@ -611,6 +611,143 @@ public class McpServerTests {
   }
 
   @Test
+  public void leakSuspectsTextHasWhatTheMemoryIsMadeOf() {
+    openDump();
+    String suspects = okText(callTool("leak_suspects", "{\"max_suspects\":10}"));
+    Assert.assertTrue(suspects, suspects.contains("what the retained heap is made of ("));
+    Assert.assertTrue(suspects, suspects.contains("% of the heap)"));
+    Assert.assertTrue(suspects, suspects.contains("\ndominates "));
+    Assert.assertTrue(suspects, suspects.contains("[GC root: "));
+    Assert.assertTrue(suspects, suspects.contains("format json gives these numbers as data"));
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> leakSuspectsJson(String arguments) {
+    openDump();
+    String json = okText(callTool("leak_suspects", arguments));
+    Assert.assertTrue(json, json.startsWith("{"));
+    Assert.assertFalse("slashes are not escaped: " + json, json.contains("\\/"));
+    return (Map<String, Object>) JSONValue.parse(json);
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void leakSuspectsAsJsonHaveTheRawNumbers() {
+    Map<String, Object> report = leakSuspectsJson("{\"format\":\"json\",\"max_suspects\":10}");
+    long heap = ((Number) report.get("usedHeapBytes")).longValue();
+    Assert.assertTrue(heap > 0);
+    Assert.assertEquals(10, ((Number) report.get("thresholdPercent")).intValue());
+    List<Map<String, Object>> suspects = (List<Map<String, Object>>) report.get("suspects");
+    Assert.assertFalse(String.valueOf(report), suspects.isEmpty());
+    Assert.assertTrue(((Number) report.get("suspectsFound")).intValue() >= suspects.size());
+    boolean sawObject = false;
+    boolean sawGroup = false;
+    for (Map<String, Object> s : suspects) {
+      long retained = ((Number) s.get("retainedBytes")).longValue();
+      double percent = ((Number) s.get("retainedPercent")).doubleValue();
+      Assert.assertTrue(String.valueOf(s), retained > 0 && retained <= heap);
+      Assert.assertEquals(String.valueOf(s), 100.0 * retained / heap, percent, 0.01);
+      Assert.assertTrue(percent >= 10 - 0.01);
+      Assert.assertNotNull(s.get("classLoader"));
+      // what the retained heap is made of adds up to what the suspect retains
+      Map<String, Object> made = (Map<String, Object>) s.get("retainedByClass");
+      long shallow = 0;
+      for (Map<String, Object> c : (List<Map<String, Object>>) made.get("classes")) {
+        Assert.assertNotNull(c.get("className"));
+        Assert.assertTrue(((Number) c.get("objects")).longValue() > 0);
+        shallow += ((Number) c.get("shallowBytes")).longValue();
+      }
+      if (made.get("other") != null) {
+        shallow += ((Number) ((Map<String, Object>) made.get("other")).get("shallowBytes")).longValue();
+      }
+      Assert.assertEquals(String.valueOf(s), retained, shallow);
+      if ("group".equals(s.get("kind"))) {
+        sawGroup = true;
+        Assert.assertNull(s.get("address"));
+        Assert.assertNull(s.get("pathFromGcRoot"));
+        Map<String, Object> biggest = (Map<String, Object>) s.get("biggestInstances");
+        Assert.assertFalse(String.valueOf(s), ((List<?>) biggest.get("instances")).isEmpty());
+      } else {
+        sawObject = true;
+        Assert.assertTrue(String.valueOf(s.get("address")).startsWith("0x"));
+        Assert.assertNull(s.get("biggestInstances"));
+        List<Map<String, Object>> path = (List<Map<String, Object>>) s.get("pathFromGcRoot");
+        if (path != null) {
+          Assert.assertNotNull(path.get(0).get("gcRootTypes"));
+          Assert.assertEquals(s.get("address"), path.get(path.size() - 1).get("address"));
+        }
+      }
+      List<Map<String, Object>> toPoint = (List<Map<String, Object>>) s.get("pathToAccumulationPoint");
+      if (toPoint != null) {
+        // root first, each later node with the reference that leads to it, ending at the accumulation point
+        Assert.assertNotNull(toPoint.get(0).get("gcRootTypes"));
+        for (int i = 1; i < toPoint.size(); i++) {
+          Assert.assertNotNull(String.valueOf(toPoint.get(i)), toPoint.get(i).get("viaReference"));
+        }
+        Map<String, Object> point = (Map<String, Object>) s.get("accumulationPoint");
+        Assert.assertEquals(point.get("address"), toPoint.get(toPoint.size() - 1).get("address"));
+      }
+    }
+    Assert.assertTrue("an object suspect", sawObject);
+    Assert.assertTrue("a group suspect", sawGroup);
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void leakSuspectsJsonAgreesWithTheText() {
+    Map<String, Object> report = leakSuspectsJson("{\"format\":\"json\",\"max_suspects\":10}");
+    String text = okText(callTool("leak_suspects", "{\"max_suspects\":10}"));
+    boolean sawThread = false;
+    for (Map<String, Object> s : (List<Map<String, Object>>) report.get("suspects")) {
+      // the same suspects in the same order, with the same numbers
+      Assert.assertTrue(text, text.contains("## Suspect " + s.get("rank") + ": " + s.get("label") + "\nretains "
+          + s.get("retainedBytes") + " bytes (" + s.get("retainedPercent") + "% of the heap)"));
+      Map<String, Object> thread = (Map<String, Object>) s.get("thread");
+      if (thread != null) {
+        sawThread = true;
+        Assert.assertFalse(((List<?>) thread.get("frames")).isEmpty());
+        Assert.assertTrue(text, text.contains("thread stack of " + thread.get("label")));
+      }
+    }
+    Assert.assertTrue("a thread suspect", sawThread);
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void leakSuspectsJsonWhenThereAreNone() {
+    Map<String, Object> report = leakSuspectsJson("{\"format\":\"json\",\"threshold_percent\":90}");
+    Assert.assertEquals(0, ((Number) report.get("suspectsFound")).intValue());
+    Assert.assertTrue(((List<Object>) report.get("suspects")).isEmpty());
+    Assert.assertTrue(String.valueOf(report.get("message")).startsWith("No leak suspect"));
+    assertToolError("leak_suspects", "{\"format\":\"xml\"}", "format must be text or json");
+  }
+
+  @Test
+  public void wastefulCollectionsCountTheSlotsOfAnEmptyCollectionOnce() {
+    openDump();
+    String waste = okText(callTool("wasteful_collections", "{\"max_rows\":200}"));
+    String[] row = null;
+    for (String line : waste.split("\n")) {
+      if (line.startsWith("| java.util.ArrayList |")) {
+        row = line.split("\\|");
+      }
+    }
+    Assert.assertNotNull(waste, row);
+    // | class | collections | empty | empty retain | avg fill | under 50% | unused slots | collisions | est. waste |
+    long emptyRetained = Long.parseLong(row[4].trim());
+    long unusedSlots = Long.parseLong(row[7].trim());
+    long estimated = Long.parseLong(row[9].trim());
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("slots of the other collections x (\\d) bytes")
+        .matcher(waste);
+    Assert.assertTrue(waste, m.find());
+    Assert.assertEquals(emptyRetained + unusedSlots * Long.parseLong(m.group(1)), estimated);
+    // the unused slots are those of the lists that are not empty: an empty list's array is in what it retains
+    String truth = okText(callTool("sql_query", "{\"sql\":\"select sum(length(this['elementData']) - getSize(this)) "
+        + "u from java.util.ArrayList where getSize(this) > 0\"}"));
+    Assert.assertTrue(truth + " vs " + unusedSlots, truth.contains("| " + unusedSlots + " |"));
+  }
+
+  @Test
   public void compareDumpsNeedsTwoDumps() {
     String path = openDump();
     Map<?, ?> result = callTool("compare_dumps", "{\"baseline\":" + JSONValue.toJSONString(path) + "}");
@@ -698,7 +835,7 @@ public class McpServerTests {
     Assert.assertTrue(waste, waste.contains("| java.util.HashMap |"));
     Assert.assertTrue(waste, waste.contains("## Most wasteful single collections"));
     // The sample dump uses compressed pointers: a reference slot is 4 bytes, not the 8-byte identifier size
-    Assert.assertTrue(waste, waste.contains("unused slots x 4 bytes per reference"));
+    Assert.assertTrue(waste, waste.contains("unused slots of the other collections x 4 bytes per reference"));
     String worst = waste.substring(waste.indexOf("## Most wasteful single collections"));
     long rows = java.util.Arrays.stream(worst.split("\n")).filter(line -> line.startsWith("| ")).count();
     Assert.assertEquals(worst, 1 + 10, rows); // the header and the 10 worst

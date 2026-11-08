@@ -38,6 +38,10 @@ final class Tools {
   static final String DUPLICATE_CLASSES = "duplicate_classes";
   static final String SYSTEM_PROPERTIES = "system_properties";
   static final String OQL = "oql";
+  static final String THREAD_LOCALS = "thread_locals";
+  static final String ARRAY_WASTE = "array_waste";
+  static final String NULL_FIELDS = "null_fields";
+  static final String MEMORY_INSPECTIONS = "memory_inspections";
   static final String MAT_QUERY = "mat_query";
   static final String CANCEL = "cancel_query";
   static final String HEAP_OVERVIEW = "heap_overview";
@@ -52,13 +56,15 @@ final class Tools {
   static final List<String> NAMES = Arrays.asList(OPEN, LIST_DUMPS, LIST_TABLES, DESCRIBE, QUERY, EXPLAIN, REFERENCE,
       CLOSE, OBJECT_INFO, REFERENCES, RETAINED_SET, PATH_TO_GC_ROOTS, IMMEDIATE_DOMINATORS, DOMINATOR_TREE, THREADS,
       MERGE_PATHS, GC_ROOTS, CLASS_REFERENCES, BIG_DROPS, UNREACHABLE, REFERENCE_STATISTICS, COLLECTION_STATS,
-      GROUP_BY_VALUE, FIND_STRINGS, DUPLICATE_CLASSES, SYSTEM_PROPERTIES, OQL, MAT_QUERY, CANCEL, HEAP_OVERVIEW, HISTOGRAM, LEAK_SUSPECTS, COMPARE_DUMPS, COLLECTION_CONTENTS, EXPORT_QUERY, DUPLICATE_STRINGS,
+      GROUP_BY_VALUE, FIND_STRINGS, DUPLICATE_CLASSES, SYSTEM_PROPERTIES, OQL, THREAD_LOCALS, ARRAY_WASTE, NULL_FIELDS,
+      MEMORY_INSPECTIONS, MAT_QUERY, CANCEL, HEAP_OVERVIEW, HISTOGRAM, LEAK_SUSPECTS, COMPARE_DUMPS, COLLECTION_CONTENTS, EXPORT_QUERY, DUPLICATE_STRINGS,
       WASTEFUL_COLLECTIONS);
   /** Tools that can run long, and so take timeout_seconds. */
   static final List<String> TIMED = Arrays.asList(OPEN, DESCRIBE, QUERY, EXPLAIN, OBJECT_INFO, REFERENCES, RETAINED_SET,
       PATH_TO_GC_ROOTS, IMMEDIATE_DOMINATORS, DOMINATOR_TREE, THREADS, MERGE_PATHS, GC_ROOTS,
       CLASS_REFERENCES, BIG_DROPS, UNREACHABLE, REFERENCE_STATISTICS, COLLECTION_STATS, GROUP_BY_VALUE, FIND_STRINGS,
-      DUPLICATE_CLASSES, SYSTEM_PROPERTIES, OQL, MAT_QUERY, HEAP_OVERVIEW, LEAK_SUSPECTS, COMPARE_DUMPS,
+      DUPLICATE_CLASSES, SYSTEM_PROPERTIES, OQL, THREAD_LOCALS, ARRAY_WASTE, NULL_FIELDS, MEMORY_INSPECTIONS, MAT_QUERY,
+      HEAP_OVERVIEW, LEAK_SUSPECTS, COMPARE_DUMPS,
       COLLECTION_CONTENTS, EXPORT_QUERY, DUPLICATE_STRINGS, WASTEFUL_COLLECTIONS, HISTOGRAM);
 
   /** MAT's Path To GC Roots menu, as the references option of the two path tools. */
@@ -247,6 +253,40 @@ final class Tools {
         properties(prop("dump", "string", DUMP_DESCRIPTION), prop("query", "string", "The OQL query"),
             prop("depth", "integer", "Tree levels to show (default 0)"), maxRows(), maxChildren(), timeout()),
         "query"));
+    tools.add(tool(THREAD_LOCALS, "Values that threads hold through thread locals, with the heap they retain, per thread "
+            + "and the biggest ones. A stale value, whose ThreadLocal was garbage collected while the thread lives on, "
+            + "stays reachable until the thread touches its thread locals again; in a thread pool that may be never, "
+            + "which is how class loaders and request data leak.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("only_stale", "boolean", "List only stale values (default false)"),
+            prop("max_rows", "integer", "Threads and values to list (default 20)"), timeout())));
+    tools.add(tool(ARRAY_WASTE, "Memory wasted in arrays: zero-length arrays (all but one per class could be shared), "
+            + "sparse arrays that are mostly null or zero, and arrays whose elements are all the same. Reads the "
+            + "contents of the arrays, so it can take time on a big dump; class_regex narrows it. Estimates are upper "
+            + "bounds in bytes, with an example address per class.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("class_regex", "string", "Only array classes whose whole name matches, e.g. byte\\[\\] or "
+                + "java\\.lang\\.Object\\[\\]; no spaces (default: all arrays)"),
+            prop("min_length", "integer", "Arrays shorter than this are not judged sparse or constant (default 8)"),
+            prop("min_percent", "integer", "Share of null or zero elements that makes an array sparse (default 50)"),
+            prop("max_rows", "integer", "Classes to list per table (default 10)"), timeout())));
+    tools.add(tool(NULL_FIELDS, "Reference fields that are null in most instances of a class, with an estimate of the "
+            + "memory they waste (a reference per null). Reads the instances of every class with enough of them, "
+            + "sampling big classes; class_regex narrows it.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("class_regex", "string", "Only classes whose whole name matches, e.g. com\\.example\\..*; no spaces "
+                + "(default: all classes)"),
+            prop("min_instances", "integer", "Classes with fewer instances are skipped (default 100)"),
+            prop("min_null_percent", "integer", "Report fields null in at least this share of instances (default 80)"),
+            prop("max_rows", "integer", "Fields to list (default 20)"), timeout())));
+    tools.add(tool(MEMORY_INSPECTIONS, "A first look at wasted memory: runs the memory inspections (duplicate strings, "
+            + "empty and under-filled collections, zero-length, sparse and constant arrays, null fields, stale "
+            + "thread locals, duplicate classes) and ranks what they found by estimated waste, each with the tool that "
+            + "lists the examples. Estimates are upper bounds and can overlap. Reads much of the heap, so it can "
+            + "take time on a big dump.",
+        properties(prop("dump", "string", DUMP_DESCRIPTION),
+            prop("inspections", "string", "Only these, separated by commas: duplicate_strings, wasteful_collections, "
+                + "array_waste, null_fields, thread_locals, duplicate_classes (default: all)"), timeout())));
     tools.add(tool(MAT_QUERY, "Run any Eclipse MAT query by its command line, e.g. \"histogram\", \"find_leaks\", "
             + "\"top_consumers\", \"dominator_tree\", \"thread_overview\", \"duplicate_classes\", "
             + "\"collection_fill_ratio\", \"gc_roots\", \"path2gc 0x...\", \"list_objects -inbound 0x...\". Objects in "
@@ -274,12 +314,16 @@ final class Tools {
                 + "instead of per class (no retained heap)"),
             prop("max_rows", "integer", "Classes or groups to list (default 30)"), timeout())));
     tools.add(tool(LEAK_SUSPECTS, "MAT's leak suspects: objects or groups of objects that retain a large share of "
-            + "the heap, each with its class loader, its accumulation point (where the memory piles up) and its "
-            + "path from a GC root; for a group without one, its biggest instances; for a thread, its stack frames "
-            + "with the local variables that hold memory.",
+            + "the heap, each with its class loader, its accumulation point (where the memory piles up), the path "
+            + "from a GC root, what the retained heap is made of by class, and what the suspect dominates; for a "
+            + "group without an accumulation point, its biggest instances; for a thread, its stack frames with the "
+            + "local variables that hold memory; for a collection, its size, capacity and fill ratio. format json "
+            + "returns all of it as one JSON document of raw numbers (bytes, counts, percentages, addresses), to "
+            + "word the findings yourself.",
         properties(prop("dump", "string", DUMP_DESCRIPTION),
             prop("threshold_percent", "integer", "Minimum share of the heap a suspect retains (default 10)"),
-            prop("max_suspects", "integer", "Suspects to describe (default 5)"), timeout())));
+            prop("max_suspects", "integer", "Suspects to describe (default 5)"),
+            prop("format", "string", "text (default) or json"), timeout())));
     tools.add(tool(COMPARE_DUMPS, "Compare two open heap dumps of the same application: totals, and the classes whose "
             + "shallow heap grew the most from the baseline to the current dump (swap the two to see what shrank). "
             + "Growth between dumps is the strongest sign of a leak.",

@@ -31,14 +31,57 @@ Register the server with your MCP client. For Claude Code, with the jar:
 
 or with Docker:
 
-    claude mcp add mat-sql -- docker run -i --rm --user "$(id -u):$(id -g)" -v /path/to/dumps:/dumps ghcr.io/miguelnieto/mat-calcite-mcp:<version>
+    claude mcp add mat-sql -- docker run -i --rm --network none --user "$(id -u):$(id -g)" -v /path/to/dumps:/dumps ghcr.io/miguelnieto/mat-calcite-mcp:<version>
 
 The server speaks MCP on stdin/stdout, so Docker runs it with `-i` and no TTY.
+
+Clients that read a JSON file (a `.mcp.json`, Claude Desktop's `claude_desktop_config.json`) take the same command as
+a list. A JSON file has no shell, so write your user and group ids in place of `$(id -u):$(id -g)`, for example `1000:1000`:
+
+    {
+      "mcpServers": {
+        "mat-sql": {
+          "command": "docker",
+          "args": ["run", "-i", "--rm", "--network", "none", "--user", "1000:1000",
+                   "-v", "/path/to/dumps:/dumps", "ghcr.io/miguelnieto/mat-calcite-mcp:<version>"]
+        }
+      }
+    }
 
 - **Heap:** MAT needs about as much heap as the dump's size. With the jar, set `-Xmx`. With Docker, the heap is
   75% of the container's memory limit (`--memory 8g`), or set `-e JAVA_TOOL_OPTIONS=-Xmx4g`.
 - **Dumps in Docker:** the assistant opens them as `/dumps/<file>.hprof`. The folder must be writable, since MAT
   writes its index files there; `--user` makes them yours rather than root's.
+- **No network:** the server needs none, so `--network none` costs nothing; see [Run it locked down](#run-it-locked-down).
+
+### Run it locked down
+
+A heap dump can hold passwords, tokens and personal data, and the server needs nothing from the outside world: it
+speaks MCP on stdin and stdout. Docker's default network lets a container reach the Internet; `--network none`
+takes that away, so that nothing the server reads can be sent anywhere by the server. Everything below works
+together, and the tools (SQL, the overview, leak suspects, CSV export) run unchanged:
+
+    docker run -i --rm \
+      --network none \
+      --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+      --cap-drop ALL --security-opt no-new-privileges \
+      --pids-limit 256 --memory 8g \
+      --user "$(id -u):$(id -g)" \
+      -v /path/to/dumps:/dumps \
+      ghcr.io/miguelnieto/mat-calcite-mcp:<version>
+
+| Flag | What it does |
+|---|---|
+| `--network none` | the container has no network interface except loopback: no Internet, no local network |
+| `--read-only --tmpfs /tmp` | the container's filesystem cannot be written; MAT's workspace lives in memory in `/tmp`. Without the tmpfs the container does not start |
+| `--cap-drop ALL`, `--security-opt no-new-privileges` | no Linux capabilities, and no way to gain privileges |
+| `--pids-limit`, `--memory` | bound the processes and the memory (the JVM heap is 75% of `--memory`) |
+| `--user` | files written next to your dumps are yours, and the process is not root |
+
+The only place the container writes besides `/tmp` is the dumps folder: MAT's index files and CSV exports. That folder
+can be mounted read-only (`-v /path/to/dumps:/dumps:ro`) once a dump has been opened once with a writable mount, so
+that its index files exist. On a dump with no index files yet, a read-only mount fails with
+`Read-only file system`.
 
 ### Tools
 
@@ -48,7 +91,7 @@ The server speaks MCP on stdin/stdout, so Docker runs it with `-i` and no TTY.
 | SQL | `sql_query` (markdown, row limit), `explain_sql`, `sql_reference`, `export_query` (CSV, all rows) |
 | One object, as on MAT's context menu | `object_info`, `list_references`, `retained_set` (optionally ignoring references), `path_to_gc_roots` (optionally through weak references), `immediate_dominators`, `collection_contents` |
 | Why memory is held | `dominator_tree` (whole heap, or one object), `merge_paths_to_gc_roots` (many objects), `gc_roots`, `class_references`, `big_drops`, `threads` |
-| Waste and leaks | `heap_overview`, `histogram` (by class, package, superclass or class loader), `leak_suspects`, `compare_dumps`, `duplicate_strings`, `wasteful_collections`, `collection_stats`, `group_by_value`, `reference_statistics`, `unreachable_objects`, `duplicate_classes` |
+| Waste and leaks | `heap_overview`, `histogram` (by class, package, superclass or class loader), `leak_suspects` (text, or JSON with the raw numbers), `compare_dumps`, `duplicate_strings`, `wasteful_collections`, `collection_stats`, `group_by_value`, `reference_statistics`, `unreachable_objects`, `duplicate_classes`, `memory_inspections` (ranked waste), `array_waste`, `null_fields`, `thread_locals` |
 | Search and context | `find_strings`, `system_properties`, `oql` |
 | Any other MAT command | `mat_query`, e.g. `top_consumers`, `find_leaks`, `thread_stack` |
 | Control | `cancel_query`; every long call also takes `timeout_seconds` |
@@ -79,6 +122,8 @@ calls: find the biggest maps with `sql_query`, then ask `path_to_gc_roots` why o
 The assistant reads heap contents. A heap can hold text written by outsiders, such as request bodies, messages or
 log lines, possibly written to steer an assistant. So:
 
+- **Network:** the server needs no network. With Docker and `--network none` it cannot reach one, so it cannot
+  send heap contents anywhere.
 - **File writes:** the server writes files only as described above. Text cells that a spreadsheet would run as a
   formula get a leading `'`.
 - **MAT commands:** `mat_query` refuses commands that read or write files, open other dumps or run reports.

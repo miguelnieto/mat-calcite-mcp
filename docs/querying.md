@@ -20,6 +20,8 @@ returned. Object addresses and counts differ in your dump.
 - [Recipes](#recipes)
 - [The core tools](#the-core-tools)
 - [MAT analyses as tools](#mat-analyses-as-tools)
+- [Leak suspects](#leak-suspects)
+- [Memory inspections](#memory-inspections)
 - [More MAT commands with `mat_query`](#more-mat-commands-with-mat_query)
 - [Gotchas](#gotchas)
 
@@ -290,9 +292,10 @@ Also available: `DUAL` (`select 1 from dual`), `cross apply`, `explain plan for 
 
 ### First look at an unknown dump
 
-1. `heap_overview`.
+1. `heap_overview`, then `memory_inspections` for a ranked list of wasted memory.
 2. `leak_suspects`: the objects or groups that retain more than 10% of the heap (`threshold_percent`), where the
-   memory piles up (the *accumulation point*), and the path from a GC root to it.
+   memory piles up (the *accumulation point*), the path from a GC root to it, and what the memory is made of. Use
+   `format: json` for the raw numbers; see [Leak suspects](#leak-suspects).
 3. `histogram` with `filter` (a class-name regex) and `sort_by` set to `objects`, `shallow` or `retained`, for the
    classes you care about.
 
@@ -369,8 +372,28 @@ having count(*) > 100 order by copies desc limit 10
 
 ### Wasteful collections
 
-`wasteful_collections` ranks empty and under-filled collections and the memory they waste, per class and as single
-worst offenders. In SQL, empty lists:
+`wasteful_collections` goes through every collection class MAT can read (JDK lists, sets, maps, queues and more),
+ranks the classes by estimated waste and lists the ten worst single collections. One row per class:
+
+| Column | Meaning |
+|---|---|
+| collections, empty | how many instances, and how many have size 0 |
+| empty retain | what the empty ones retain in total. All of it counts as waste: nothing in them is used |
+| avg fill, under 50% full | average of size / capacity over the collections that have a capacity, and how many use less than half of it |
+| unused slots | slots beyond the size in the collections that are **not** empty (an empty collection's slots are already in *empty retain*) |
+| avg collision ratio | for maps, how many entries share a bucket with another: high means a poor `hashCode` |
+| est. waste | *empty retain* + *unused slots* x the size of a reference (4 bytes with compressed pointers, else 8) |
+
+Read it as an upper bound on what right-sizing could save, not as a promise. Growth headroom is normal: an
+`ArrayList` grows by half, so it is 67% to 100% full; a `HashMap` doubles its table at 75% load, so it is 37% to 75%
+full. A fill near those values is healthy, whatever `unused slots` says. The findings that matter are many *empty*
+collections (create them lazily, or share one empty instance), a fill far below those ranges (an oversized initial
+capacity, or a collection that shrank), and a high collision ratio. For one of the worst single collections, use
+`collection_contents` to see what is in it and `path_to_gc_roots` to see who holds it.
+
+The report does not cover collections whose class MAT cannot read, collections with one or a few elements (see
+`collection_stats` with `kind: collection_sizes`), or the per-entry overhead (a `HashMap$Node` is 32 bytes per entry,
+and a boxed `Integer` in a list 16 bytes plus its reference). In SQL, empty lists:
 
 ```sql
 select count(*) from java.util.ArrayList where getSize(this) = 0
@@ -422,7 +445,7 @@ and `timeout_seconds` (default 300) when it can run long.
 | `object_info` | `address` | class, sizes, GC root type, immediate dominator and fields of one object |
 | `immediate_dominators` | `address`, `skip` | who keeps the objects alive exclusively; `skip` steps over classes by regex |
 | `heap_overview` | `top` | heap and JVM details, the biggest objects and the classes using most memory |
-| `leak_suspects` | `threshold_percent` (default 10), `max_suspects` (default 5) | objects retaining much of the heap, with accumulation point and path |
+| `leak_suspects` | `threshold_percent` (default 10), `max_suspects` (default 5), `format` (text, json) | objects retaining much of the heap, with accumulation point and path; see [Leak suspects](#leak-suspects) |
 | `compare_dumps` | `baseline` | totals and the classes that grew between two open dumps |
 | `collection_contents` | `address`, `offset`, `limit` | entries of a map, or elements of a list, with fill and collision ratio |
 | `duplicate_strings` | `min_copies` | strings stored many times, and the bytes the copies waste |
@@ -533,6 +556,143 @@ select s from java.lang.String s where toString(s) = "needle"
 
 A mistake in the query does not fail the call: MAT's explanation comes back as the text (`Problem reported:`).
 Line breaks in the query are allowed. `sql_query` is usually the better tool; use `oql` for MAT-only syntax.
+
+## Leak suspects
+
+`leak_suspects` is MAT's *Leak Suspects* report as data. A suspect is an object, or a group of objects of one class,
+that retains more than `threshold_percent` of the heap (default 10); `max_suspects` limits how many are described
+(default 5). Each suspect has:
+
+| What | Meaning |
+|---|---|
+| retained heap and share | what would be freed if the suspect were garbage |
+| class loader | which loader defined its class |
+| accumulation point | the object where the memory piles up, which can be deeper than the suspect: a thread keeps a `HashMap` alive, the `HashMap`'s table holds the entries |
+| path from a GC root | root first, each step with the reference that leads to it (a field, `[0]` for an array slot, `<Java Local>` for a local variable) |
+| what the retained heap is made of | the classes of everything it retains, by shallow heap: "100,392 `byte[]`, 102,382 `String`, 50,126 `HashMap$Node`" says "a map of strings" |
+| what it dominates | the objects it immediately dominates that retain the most: which of its fields or locals hold the memory |
+| biggest instances | for a group with no single holder, the members that retain the most, as starting points for `path_to_gc_roots` |
+| thread stack | for a thread, its stack frames with the local variables that retain at least 1% of the thread |
+| collection | if the accumulation point is a collection, or the table inside one, its size, capacity, fill ratio, collision ratio and a few entries |
+| notes | e.g. "only weak references keep it" when no path from a GC root exists without them |
+
+The first four are what MAT's report has. The rest go beyond it, and MAT's pie chart and HTML are left out. The
+breakdown by class is MAT's *minimum retained set*, as in MAT's report: for a group it counts what each member keeps
+alive on its own, which is what the suspect's retained heap counts, so the classes add up to it.
+
+### Format json
+
+`format: json` returns the same facts as one JSON document of raw numbers, so that you can word the findings
+yourself, check them, or put them in a table. Sizes are in bytes, `retained...Percent` and `sharePercent` are
+percentages of the heap and of the suspect's retained heap, addresses are strings such as `"0x708063870"`, and
+`null` means "does not apply" (no accumulation point, not a thread...). The document is the one the text is
+rendered from.
+
+```
+{
+ "dump": "/dumps/app.hprof", "usedHeapBytes": 11417688, "thresholdPercent": 10, "suspectsFound": 3,
+ "suspects": [{
+   "rank": 1, "kind": "object", "label": "java.lang.Thread @ 0x707d06738  main", "className": "java.lang.Thread",
+   "address": "0x707d06738", "objects": 1, "retainedBytes": 7520968, "retainedPercent": 65.87,
+   "classLoader": "java.lang.ClassLoader @ 0x0  <system class loader>",
+   "accumulationPoint": {"label": "java.util.HashMap$Node[131072] @ 0x708cb8c60", "address": "0x708cb8c60",
+     "className": "java.util.HashMap$Node[]", "shallowBytes": 524304, "retainedBytes": 7316304, "retainedPercent": 64.08},
+   "pathFromGcRoot": [{"label": "java.lang.Thread @ 0x707d06738  main", "address": "0x707d06738", ...,
+     "gcRootTypes": "Thread"}],
+   "pathToAccumulationPoint": [
+     {"label": "java.lang.Thread @ ... main", ..., "gcRootTypes": "Thread"},
+     {"label": "java.util.HashMap @ 0x708063870", ..., "retainedBytes": 7316352, "viaReference": "<Java Local>"},
+     {"label": "java.util.HashMap$Node[131072] @ 0x708cb8c60", ..., "viaReference": "table"}],
+   "retainedByClass": {"totalObjects": 255239, "classes": [
+     {"className": "byte[]", "objects": 100392, "shallowBytes": 2814248, "sharePercent": 37.42}, ...],
+     "other": {"classes": 118, "objects": 739, "shallowBytes": 29848}},
+   "dominates": {"dominatedObjects": 45, "biggest": [{"label": "java.util.HashMap @ 0x708063870", ...}]},
+   "biggestInstances": null,
+   "collection": {"label": "java.util.HashMap @ 0x708063870", "className": "java.util.HashMap", "isMap": true,
+     "size": 50000, "capacity": 131072, "fillRatio": 0.38, "collisionRatio": 0.17,
+     "sample": ["java.lang.String @ ...  key2100 => java.lang.String @ ...  value2100", ...]},
+   "thread": {"label": "...", "retainedBytes": 7520968, "stackInDump": true, "frames": [
+     {"text": "at Dump.main(...)", "locals": [{"label": "java.util.HashMap @ 0x708063870", "address": "0x708063870",
+       "retainedBytes": 7316352}], "moreLocals": 0}], "moreFrames": 0},
+   "notes": []}]}
+```
+
+Numbers are from a small test dump. For a group suspect `biggestInstances` is `{"instances": [...], "moreInstances": n}`,
+where `n` is how many members are not listed, and `pathFromGcRoot` and `dominates` are `null`. A thread's
+`localsMinimumShare` says which locals are listed: those that retain at least 1% of the thread. With no suspect above
+the threshold, `suspects` is empty, `suspectsFound` is 0 and `message` says so. A path with more than 40 nodes keeps
+the first and last 20, with `{"omittedNodes": n}` between.
+
+## Memory inspections
+
+Four tools find memory that is wasted or held for no good reason, in the manner of a profiler's automatic memory
+inspections. Their numbers are estimates in bytes and **upper bounds**: what a change could save, not a promise. They
+overlap (the array behind an `ArrayList` is both a sparse array and part of the collection's waste), so do not add them
+up. `memory_inspections` runs them all and ranks what they found; the other three give the details, with example
+addresses for `object_info` and `path_to_gc_roots`.
+
+| Tool | Finds | Options |
+|---|---|---|
+| `memory_inspections` | all of the below plus duplicate strings, empty collections and duplicate classes, ranked | `inspections` (a comma-separated subset) |
+| `thread_locals` | values that threads hold through thread locals, and **stale** ones | `only_stale`, `max_rows` |
+| `array_waste` | zero-length, sparse and constant arrays | `class_regex`, `min_length`, `min_percent`, `max_rows` |
+| `null_fields` | reference fields that are null in most instances of a class | `class_regex`, `min_instances`, `min_null_percent`, `max_rows` |
+
+### memory_inspections
+
+One table of what was found and what it may cost, then the possible leaks, then the tool to call for the examples:
+
+| inspection | details with | est. waste is |
+|---|---|---|
+| Duplicate strings | `duplicate_strings` | what all copies but the smallest retain |
+| Empty and under-filled collections | `wasteful_collections` | see [Wasteful collections](#wasteful-collections) |
+| Zero-length, sparse arrays, arrays with all the same element | `array_waste` | see below |
+| Fields that are null in most objects | `null_fields` | null fields x the size of a reference |
+| Stale thread-local values (a possible leak) | `thread_locals` | what the stale values retain |
+| Classes defined by several class loaders (a possible leak) | `duplicate_classes` | a count only |
+
+It reads much of the heap (every string, collection, array and the instances of every large class), so on a big dump
+it can take minutes; `inspections` runs only some, and each tool can be run alone with a narrower scope.
+
+### thread_locals
+
+A `Thread` holds its thread-local values in a map whose keys are weak references to the `ThreadLocal` objects, and
+whose values are strong. When a `ThreadLocal` is garbage collected, its value stays until the thread next touches its
+thread locals, because only then does the map clear stale entries. In a thread pool that may be never, which is how a
+class loader, a request or a connection is kept alive after the code that used it is gone. The report counts each
+thread's values, how many are **stale** (the key is gone), and what the values retain:
+
+```
+1 of 12 threads holds 1 thread-local value; 1 of them stale (...). The values retain 300016 bytes (6.1% of the heap)...
+| thread                                     | values | stale | retained bytes | stale bytes |
+| java.lang.Thread @ 0xf04498a0  gen-worker  | 2      | 1     | 400032         | 300016      |
+```
+
+A value that is not stale is in use, not a problem by itself. `only_stale` lists just the stale ones. The retained
+size of each value is its own; values that share objects are not added up exactly.
+
+### array_waste
+
+Three findings, each exclusive of the others:
+
+| Finding | Waste is |
+|---|---|
+| zero-length arrays | all but one per class: a single shared instance would do |
+| sparse arrays: at least `min_percent` (default 50) of the elements null or zero, and at least `min_length` (default 8) long | the empty slots x the element size |
+| arrays whose elements are all the same (all null, all zero, all 7...) | the whole array: a value and a length would do |
+
+A buffer that was allocated and not yet written is all zeros, and is not necessarily waste (a pooled buffer is
+meant to be reused), so judge the constant arrays by who holds them. The tool reads the arrays' contents; an array of
+more than 1,000,000 elements is judged on its first 65,536 and is never counted as all the same.
+
+### null_fields
+
+For every class with at least `min_instances` (default 100) instances it reads the instances and counts, for each
+reference field, how often it is null. Fields null in at least `min_null_percent` (default 80) are reported with
+the estimate `null instances x the size of a reference`. A field that is null in most objects can move into a
+subclass, or into a holder object created on first use. The instances of `java.lang.Class` are left out (they are the
+JVM's mirrors of classes). A class with more than 20,000 instances is judged on an even sample of 20,000, marked
+`~`, and a scan stops after 2,000,000 instances, which `class_regex` avoids by narrowing it to your own classes.
 
 ## More MAT commands with `mat_query`
 

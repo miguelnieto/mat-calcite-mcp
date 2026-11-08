@@ -8,6 +8,24 @@
   package (`group_by`), or what one object dominates (`address`).
 - New tool `threads`: the threads of the dumped JVM with state and retained heap, optionally with stack frames and the
   heap their locals hold, or the details of given threads.
+- `leak_suspects` goes beyond MAT's Leak Suspects report and can return its numbers as data. Each suspect now also
+  has what its retained heap is made of by class, what it dominates, its path from a GC root with the reference at
+  each step, and, for a collection at the accumulation point, its size, capacity and fill ratio with a few entries.
+  `format` json returns one JSON document of raw numbers (bytes, counts, percentages, addresses) that the text is
+  rendered from.
+- **Fixed:** `wasteful_collections` counted the slots of an empty collection twice, once in what it retains and once as
+  unused slots, so an empty `new ArrayList<>(100)` showed 840 bytes of waste instead of 440. The "unused slots" column
+  now covers only the collections that are not empty, and the single-collection list says how many slots an empty
+  one has allocated.
+- The Docker examples run with `--network none`, as a JSON client configuration does too, and the README has a "Run it
+  locked down" section with a read-only filesystem, no capabilities and resource limits, tested together with the
+  tools. The server needs no network. The release workflow now smoke-tests the published image locked down, so a
+  change that makes the server need the network, or a writable filesystem, fails the release.
+- New memory inspections: `memory_inspections` ranks what wastes memory (duplicate strings, empty and under-filled
+  collections, zero-length, sparse and constant arrays, fields that are null in most objects) and what may leak (stale
+  thread-local values, classes defined by several class loaders), each with the tool that lists the examples.
+  `thread_locals`, `array_waste` and `null_fields` are the new details. Estimates are upper bounds in bytes and can
+  overlap. Their tests build a heap with a known shape in a child JVM when they start, so no binary dump is added.
 - New tools with explicit options for MAT analyses that were only reachable through `mat_query`:
   `merge_paths_to_gc_roots`, `gc_roots`, `class_references`, `big_drops`, `unreachable_objects`,
   `reference_statistics`, `collection_stats`, `group_by_value`, `find_strings`, `duplicate_classes`,
