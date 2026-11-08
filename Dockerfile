@@ -3,7 +3,8 @@
 #   docker build -t mat-calcite-mcp .
 #
 # Run it with -i and no TTY: the server speaks MCP on stdin/stdout.
-#   docker run -i --rm --user "$(id -u):$(id -g)" -v /path/to/dumps:/dumps ghcr.io/miguelnieto/mat-calcite-mcp
+#   docker run -i --rm --network none --user "$(id -u):$(id -g)" -v /path/to/dumps:/dumps ghcr.io/miguelnieto/mat-calcite-mcp
+# The server needs no network; the README has the locked-down variant (read-only filesystem, no capabilities...).
 # Dumps are opened as /dumps/<file>.hprof. MAT writes its index files next to them, so the volume must be
 # writable; --user makes those files yours rather than root's.
 FROM eclipse-temurin:17-jre

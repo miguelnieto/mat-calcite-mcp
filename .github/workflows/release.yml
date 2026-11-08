@@ -68,13 +68,20 @@ jobs:
 
       - name: Smoke-test the published image as an MCP server
         run: |
-          # As an arbitrary non-root user, as the README suggests (--user); the dumps folder must be writable for it
+          # Locked down, as the README recommends: no network (the server needs none), a read-only filesystem, no
+          # capabilities, and an arbitrary non-root user (--user), for which the dumps folder must be writable.
+          # If the server ever needed one of these, this step fails and the release does not go out.
           mkdir -p smoke && cp server/dumps/mvn1m_jdk18.hprof smoke/ && chmod 777 smoke
           {
             echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke"}}}'
             echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"open_heap_dump","arguments":{"path":"/dumps/mvn1m_jdk18.hprof"}}}'
             echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"sql_query","arguments":{"sql":"select count(*) c from java.lang.String"}}}'
-          } | docker run -i --rm --user 12345:12345 -v "$PWD/smoke:/dumps" "$IMAGE:$VERSION" > out.jsonl
+          } | docker run -i --rm \
+              --network none \
+              --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+              --cap-drop ALL --security-opt no-new-privileges \
+              --pids-limit 256 --memory 2g \
+              --user 12345:12345 -v "$PWD/smoke:/dumps" "$IMAGE:$VERSION" > out.jsonl
           cat out.jsonl
           test "$(wc -l < out.jsonl)" -eq 3
           grep -q "\"version\":\"$VERSION\." out.jsonl
