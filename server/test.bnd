@@ -1,5 +1,5 @@
 Bundle-SymbolicName: io.github.miguelnieto.matcalcitemcp.tests
-Bundle-Version: 0.1.0.${tstamp}
+Bundle-Version: 0.2.0.${tstamp}
 Bundle-ClassPath: .,${embedded.jars}
 # AllTests is the suite of every test class
 Test-Cases: com.github.vlsi.mat.tests.calcite.AllTests

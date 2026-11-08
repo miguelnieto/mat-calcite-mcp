@@ -1,6 +1,6 @@
 Bundle-SymbolicName: io.github.miguelnieto.matcalcitemcp
 Bundle-Name: MAT Calcite MCP server
-Bundle-Version: 0.1.0.${tstamp}
+Bundle-Version: 0.2.0.${tstamp}
 Bundle-Activator: io.github.miguelnieto.matcalcitemcp.McpActivator
 Bundle-ClassPath: .,${embedded.jars}
 
