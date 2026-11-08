@@ -181,8 +181,8 @@ final class Tools {
         properties(prop("dump", "string", DUMP_DESCRIPTION),
             prop("depth", "integer", "Tree levels to show (default 1)"), maxRows(), maxChildren(), timeout())));
     tools.add(tool(CLASS_REFERENCES, "What the instances of the matching classes reference (outgoing, the default) or "
-            + "who references them (incoming), summed up by class: with incoming, for example which classes hold the "
-            + "29 URLs. For single objects use list_references.",
+            + "who references them (incoming), summed up by class: with incoming, for example which classes hold all "
+            + "the URLs. For single objects use list_references.",
         properties(prop("dump", "string", DUMP_DESCRIPTION),
             prop("class_regex", "string", "Regular expression for the whole class name, e.g. java\\.net\\.URL; no "
                 + "spaces"),
@@ -281,10 +281,11 @@ final class Tools {
             prop("threshold_percent", "integer", "Minimum share of the heap a suspect retains (default 10)"),
             prop("max_suspects", "integer", "Suspects to describe (default 5)"), timeout())));
     tools.add(tool(COMPARE_DUMPS, "Compare two open heap dumps of the same application: totals, and the classes whose "
-            + "memory grew the most from the baseline to the current dump. Growth between dumps is the strongest sign "
-            + "of a leak.",
+            + "shallow heap grew the most from the baseline to the current dump (swap the two to see what shrank). "
+            + "Growth between dumps is the strongest sign of a leak.",
         properties(prop("dump", "string", "The current (later) heap dump"),
-            prop("baseline", "string", "The baseline (earlier) heap dump; both must be open"),
+            prop("baseline", "string", "The baseline (earlier) heap dump, as opened; both must be open; the path must "
+                + "not contain spaces"),
             prop("max_rows", "integer", "Classes to list (default 30)"), timeout()), "baseline"));
     tools.add(tool(COLLECTION_CONTENTS, "The contents of a collection: map entries (key => value), or the elements "
             + "of a list, set or queue, with its size, capacity, fill and collision ratio. Works for the JDK "

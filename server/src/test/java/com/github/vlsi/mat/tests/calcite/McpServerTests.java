@@ -618,6 +618,63 @@ public class McpServerTests {
     Assert.assertTrue(text(result), text(result).contains("same heap dump"));
   }
 
+  /**
+   * Runs the body with a copy of the test dump, opened next to the original in a directory of the given name, and
+   * closes and deletes the copy afterwards, so the other tests still see a single open dump.
+   */
+  private static void withCopyOfTheDump(String directoryName, java.util.function.BiConsumer<String, String> body) {
+    String original = openDump();
+    java.io.File directory = new java.io.File(System.getProperty("java.io.tmpdir"),
+        directoryName + "-" + System.nanoTime());
+    java.io.File copy = new java.io.File(directory, "copy.hprof");
+    try {
+      Assert.assertTrue(directory.mkdirs());
+      java.nio.file.Files.copy(new File(original).toPath(), copy.toPath());
+      Map<?, ?> opened = callTool("open_heap_dump", "{\"path\":" + JSONValue.toJSONString(copy.getAbsolutePath())
+          + "}");
+      Assert.assertEquals(text(opened), Boolean.FALSE, opened.get("isError"));
+      body.accept(original, copy.getAbsolutePath());
+    } catch (java.io.IOException e) {
+      throw new AssertionError(e);
+    } finally {
+      callTool("close_heap_dump", "{\"dump\":" + JSONValue.toJSONString(copy.getAbsolutePath()) + "}");
+      File[] files = directory.listFiles();
+      if (files != null) {
+        for (File file : files) {
+          file.delete();
+        }
+      }
+      directory.delete();
+    }
+  }
+
+  @Test
+  public void compareDumpsOfIdenticalHeapsShowNoChange() {
+    withCopyOfTheDump("compare", (current, baseline) -> {
+      String report = okText(callTool("compare_dumps", "{\"dump\":" + JSONValue.toJSONString(current)
+          + ",\"baseline\":" + JSONValue.toJSONString(baseline) + ",\"max_rows\":5}"));
+      Assert.assertTrue(report, report.contains("| | baseline | current | change |"));
+      Assert.assertTrue(report, report.matches("(?s).*\\| objects \\| (\\d+) \\| \\1 \\| 0 \\|.*"));
+      Assert.assertTrue(report, report.matches("(?s).*\\| used heap \\(bytes\\) \\| (\\d+) \\| \\1 \\| 0 \\|.*"));
+      Assert.assertTrue(report, report.contains("## Classes that grew the most"));
+      Assert.assertTrue(report, report.contains("| Class Name | Objects | Shallow Heap |"));
+      // both dumps stay open and usable
+      String rows = okText(callTool("sql_query", "{\"dump\":" + JSONValue.toJSONString(baseline)
+          + ",\"sql\":\"select count(*) c from java.lang.String\"}"));
+      Assert.assertTrue(rows, rows.contains("| 3256 |"));
+    });
+  }
+
+  @Test
+  public void compareDumpsRefusesABaselinePathWithSpaces() {
+    withCopyOfTheDump("compare with space", (current, baseline) -> {
+      Map<?, ?> result = callTool("compare_dumps", "{\"dump\":" + JSONValue.toJSONString(current)
+          + ",\"baseline\":" + JSONValue.toJSONString(baseline) + "}");
+      Assert.assertEquals(Boolean.TRUE, result.get("isError"));
+      Assert.assertTrue(text(result), text(result).contains("spaces"));
+    });
+  }
+
   @Test
   public void collectionContents() {
     String contents = okText(callTool("collection_contents", "{\"address\":\"" + biggestHashMap()

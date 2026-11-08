@@ -4,8 +4,8 @@ How to investigate a heap dump with this server's SQL and tools. It is written f
 The server also sends a short version of it to every MCP client (the `instructions` it returns at start-up and the
 `sql_reference` tool); this is the long one, with examples.
 
-Every query below was run against a real heap dump through the server's container image, and the behaviours
-described are what it did. Object addresses and counts differ in your dump.
+Every query and tool call below was run against real heap dumps, and the behaviours described are what the server
+returned. Object addresses and counts differ in your dump.
 
 ## Contents
 
@@ -18,6 +18,7 @@ described are what it did. Object addresses and counts differ in your dump.
 - [SQL features that work](#sql-features-that-work)
 - [What does not work](#what-does-not-work)
 - [Recipes](#recipes)
+- [The core tools](#the-core-tools)
 - [MAT analyses as tools](#mat-analyses-as-tools)
 - [More MAT commands with `mat_query`](#more-mat-commands-with-mat_query)
 - [Gotchas](#gotchas)
@@ -56,7 +57,8 @@ select count(*) from "java.lang.String"
 | `"long[]"`, `"java.lang.Object[]"` | array classes |
 | `native.ThreadStackFrames` | one row per thread stack frame: `thread`, `depth`, `text`, `objects` |
 
-- Quote any part that is an SQL word (`ref`, `user`, `Date`): `"java.util.Date"`, `instanceof.java.lang."ref".Reference`.
+- Quote any part that is an SQL word (`ref`, `user`, `Date`): `"java.util.Date"`,
+  `instanceof.java.lang."ref".Reference`.
 - Names are **case-sensitive**: `java.util.Hashmap` is not `java.util.HashMap`. If you are unsure of a name, use
   `list_tables` with a `filter`.
 - `instanceof.` follows superclasses only. Heap dumps do not record interfaces, so `instanceof."java.util.Map"` is
@@ -289,8 +291,8 @@ Also available: `DUAL` (`select 1 from dual`), `cross apply`, `explain plan for 
 ### First look at an unknown dump
 
 1. `heap_overview`.
-2. `leak_suspects`: the classes retaining over 10% of the heap, where the memory piles up (the *accumulation
-   point*), and the path from a GC root to it.
+2. `leak_suspects`: the objects or groups that retain more than 10% of the heap (`threshold_percent`), where the
+   memory piles up (the *accumulation point*), and the path from a GC root to it.
 3. `histogram` with `filter` (a class-name regex) and `sort_by` set to `objects`, `shallow` or `retained`, for the
    classes you care about.
 
@@ -298,7 +300,9 @@ Also available: `DUAL` (`select 1 from dual`), `cross apply`, `explain plan for 
 
 1. Get its address from any result, e.g. `java.util.HashMap @ 0x708063870`.
 2. `path_to_gc_roots` shows the shortest path from a GC root. A `<Java Local>` entry is a local variable of a
-   thread; use `leak_suspects` on a thread suspect to see its stack frames.
+   thread: `threads` with that thread's address shows its stack, and `leak_suspects` lists the locals that hold the
+   most. If only the object itself comes back, weak or soft references hold it: see
+   [Weak, soft and phantom references](#weak-soft-and-phantom-references).
 3. `list_references` with `direction: incoming` shows the referrers one level at a time (`depth` goes deeper).
 4. `immediate_dominators` shows which objects exclusively keep it alive.
 5. `dominator_tree` with its `address` shows the other direction: what the object keeps alive, level by level.
@@ -343,7 +347,7 @@ For one thread's locals as rows, query `native.ThreadStackFrames` (see below); f
 select this, getSize(this) size, retainedSize(this) retained
   from instanceof.java.util.AbstractMap order by retained desc limit 10
 
--- classes by total retained size
+-- classes by total shallow size (the histogram tool does this too, and can sort by retained size)
 select getType(this) t, count(*) c, sum(shallowSize(this)) shallow
   from instanceof.java.lang.Object group by getType(this) order by shallow desc limit 10
 ```
@@ -354,7 +358,8 @@ of a map or the elements of a list, with its capacity, fill ratio and collision 
 ### Duplicate strings
 
 `duplicate_strings` (with `min_copies`) lists values stored many times, the bytes the extra copies waste, and an
-example address. Follow an example with `list_references` (`direction: incoming`) to find who creates the copies. In SQL:
+example address. Follow an example with `list_references` (`direction: incoming`) to find who creates the copies.
+In SQL:
 
 ```sql
 select toString(this) s, count(*) copies, sum(shallowSize(this)) shallow
@@ -373,9 +378,24 @@ select count(*) from java.util.ArrayList where getSize(this) = 0
 
 ### Growth between two dumps
 
-Open the baseline and the current dump, then `compare_dumps` with `baseline` set to the baseline's path. It shows
-the totals and the classes that grew most. Both dumps must already be open (it never opens files itself), and
-`dump` names the current one when several are open.
+Open both dumps with `open_heap_dump`, then call `compare_dumps` with `dump` set to the current (later) dump and
+`baseline` to the earlier one, both as the paths you opened them with. It never opens files itself. It shows:
+
+- the totals of both dumps: objects, classes and used heap, with the change;
+- the classes sorted by the change of their **shallow** heap, biggest growth first, each with the change in objects
+  and bytes (current minus baseline). A class showing `+2,900` objects is where to look next: `sql_query` or
+  `histogram` on the current dump, then `path_to_gc_roots` on one of its objects.
+
+Things to know:
+
+- Growth comes first. Classes that shrank or disappeared sort last, so raise `max_rows`, or swap `dump` and
+  `baseline` to see them as growth.
+- It compares shallow heap, not retained heap. For retained sizes run `histogram` with `retained` on each dump (use
+  its `dump` option) and compare the two tables.
+- The baseline's path must not contain spaces (`open_heap_dump` itself accepts them): copy or link the dump to a
+  path without spaces. The comparison fails with a message that says so.
+- Both dumps stay open, and the baseline is opened once more while the comparison runs, so allow heap for that.
+- The dumps should come from the same application. Classes are matched by name.
 
 ### Which code holds these objects?
 
@@ -385,15 +405,36 @@ For objects held by thread locals, query the stack frames in `native.ThreadStack
 select thread, depth, text from native.ThreadStackFrames where text like '%MyService%'
 ```
 
-### Other MAT reports
+## The core tools
 
-See [MAT analyses as tools](#mat-analyses-as-tools) and [More MAT commands with `mat_query`](#more-mat-commands-with-mat_query).
+The tools you use in every investigation, with their options. Every tool also takes `dump` when several dumps are open,
+and `timeout_seconds` (default 300) when it can run long.
+
+| Tool | Options | Does |
+|---|---|---|
+| `open_heap_dump` | `path` | opens a dump and keeps it open (no time limit by default) |
+| `list_heap_dumps`, `close_heap_dump` | | lists the open dumps; closes one and frees its memory |
+| `list_tables` | `filter`, `limit` | finds tables (classes) whose name contains the filter |
+| `describe_table` | `table` | the columns and SQL types of a table |
+| `sql_query` | `sql`, `max_rows` | runs a query (default 100 rows, at most 5000) |
+| `explain_sql` | `sql` | the execution plan of a query |
+| `export_query` | `sql`, `path`, `overwrite` | writes every row to a `.csv` file in the dump's directory |
+| `object_info` | `address` | class, sizes, GC root type, immediate dominator and fields of one object |
+| `immediate_dominators` | `address`, `skip` | who keeps the objects alive exclusively; `skip` steps over classes by regex |
+| `heap_overview` | `top` | heap and JVM details, the biggest objects and the classes using most memory |
+| `leak_suspects` | `threshold_percent` (default 10), `max_suspects` (default 5) | objects retaining much of the heap, with accumulation point and path |
+| `compare_dumps` | `baseline` | totals and the classes that grew between two open dumps |
+| `collection_contents` | `address`, `offset`, `limit` | entries of a map, or elements of a list, with fill and collision ratio |
+| `duplicate_strings` | `min_copies` | strings stored many times, and the bytes the copies waste |
+| `wasteful_collections` | | empty, under-filled and colliding collections, per class and the worst ones |
+| `cancel_query` | | stops the call that is running |
 
 ## MAT analyses as tools
 
 The analyses of Eclipse MAT that matter most for leaks are tools of their own, with named options, so no MAT
-command line is needed. Every tool also takes `dump` (when several are open) and `timeout_seconds`; the ones that
-show trees take `depth`, `max_rows` and `max_children`.
+command line is needed. The tools in this table also take `dump` and `timeout_seconds`, and the ones that show trees
+take `depth`, `max_rows` and `max_children`. For other MAT commands see
+[More MAT commands with `mat_query`](#more-mat-commands-with-mat_query).
 
 | Tool | Options | Shows |
 |---|---|---|
@@ -428,8 +469,8 @@ the two entries of MAT's *List objects* and *Show objects by class* menus. Like 
 Use `incoming` for "who holds this". Each referrer is labelled with how it refers to the object: a field name, an array
 index such as `[0]`, or `<Java Local>` for a thread's local variable. `depth` goes further up or down: with
 `direction: incoming` and `depth: 3` the chain runs from the object through its referrers' referrers.
-`class_references` groups each level by class, so the 29 `java.net.URL` objects are one row, with `direction:
-incoming` showing which classes hold them.
+`class_references` groups each level by class, so all `java.net.URL` objects are one row, and `direction: incoming`
+shows which classes hold them.
 
 ### Regular expressions in these tools
 
@@ -497,7 +538,7 @@ Line breaks in the query are allowed. `sql_query` is usually the better tool; us
 
 `mat_query` runs one MAT command line, as typed in MAT's command line or its query browser, for the commands that
 have no tool and for options a tool does not offer. Commands come from Eclipse MAT 1.17; there is no `help`
-command, so this is the list of the ones checked against the container image.
+command, so this is the list of the ones checked against a real dump.
 
 How a command line is written:
 
@@ -510,7 +551,7 @@ How a command line is written:
 
 | Command | What it shows |
 |---|---|
-| `top_consumers` | biggest objects, classes, class loaders and packages in one report |
+| `top_consumers [-t percent]` | biggest objects, classes, class loaders and packages in one report; `-t` is the share of the heap an entry must retain to be listed (default 1) |
 | `find_leaks [-threshold_percent n]` | leak suspects as a table (the `leak_suspects` tool adds the paths and stacks) |
 | `leakhunter` | MAT's leak-hunter report: suspects with descriptions, paths and thread stacks |
 | `show_dominator_tree <address>` | what the object dominates; the `dominator_tree` tool with `address` |
@@ -530,7 +571,6 @@ How a command line is written:
   `find_leaks2` and `leakhunter2`. The check looks at the command's definition, not at what you pass; the tools
   above build their command lines themselves from checked values.
 - **Charts are left out.** A pie chart in a report appears as `(not shown: PieImpl)`.
-- `top_consumers` rejected the option names I tried for its threshold; run it without options.
 
 ## Gotchas
 
