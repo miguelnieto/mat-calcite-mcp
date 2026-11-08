@@ -139,6 +139,24 @@ public class McpServerTests {
   }
 
   @Test
+  public void referencesDefaultToOutgoingLikeMat() {
+    String address = biggestHashMap();
+    String byDefault = okText(callTool("list_references", "{\"address\":\"" + address + "\"}"));
+    String outgoing = okText(callTool("list_references", "{\"address\":\"" + address
+        + "\",\"direction\":\"outgoing\"}"));
+    Assert.assertEquals(byDefault, outgoing);
+    // what the map references: its fields, such as the table
+    Assert.assertTrue(outgoing, outgoing.contains("\n  table "));
+    // who references it is a different answer
+    String incoming = okText(callTool("list_references", "{\"address\":\"" + address
+        + "\",\"direction\":\"incoming\"}"));
+    Assert.assertNotEquals(outgoing, incoming);
+    Assert.assertFalse(incoming, incoming.contains("\n  table "));
+    assertToolError("list_references", "{\"address\":\"" + address + "\",\"direction\":\"up\"}",
+        "direction must be outgoing or incoming");
+  }
+
+  @Test
   public void retainedSet() {
     String set = okText(callTool("retained_set", "{\"address\":\"" + biggestHashMap() + "\"}"));
     Assert.assertTrue(set, set.contains("java.util.HashMap$Node"));
@@ -285,7 +303,7 @@ public class McpServerTests {
         + "\"group_by\":\"from_gc_roots_by_class\"}"));
     Assert.assertTrue(byClass, byClass.contains("java.util.Properties"));
     String withWeak = okText(callTool("merge_paths_to_gc_roots", "{\"address\":\"" + biggestHashMap()
-        + "\",\"include_weak_refs\":true}"));
+        + "\",\"references\":\"all\"}"));
     Assert.assertTrue(withWeak, withWeak.contains("java.util.HashMap @ 0x"));
   }
 
@@ -303,8 +321,27 @@ public class McpServerTests {
   @Test
   public void pathToGcRootsCanFollowWeakReferences() {
     String paths = okText(callTool("path_to_gc_roots", "{\"address\":\"" + biggestHashMap()
-        + "\",\"include_weak_refs\":true}"));
+        + "\",\"references\":\"all\"}"));
     Assert.assertTrue(paths, paths.contains("java.util.HashMap @ 0x"));
+  }
+
+  @Test
+  public void pathsOfferTheReferenceChoicesOfMatsMenu() {
+    String address = biggestHashMap();
+    for (String references : new String[] {"all", "exclude_weak", "exclude_soft", "exclude_phantom",
+        "exclude_weak_soft", "exclude_phantom_soft", "exclude_phantom_weak", "exclude_all"}) {
+      String paths = okText(callTool("path_to_gc_roots", "{\"address\":\"" + address + "\",\"references\":\""
+          + references + "\"}"));
+      Assert.assertTrue(references + ": " + paths, paths.contains("java.util.HashMap @ 0x"));
+      String merged = okText(callTool("merge_paths_to_gc_roots", "{\"address\":\"" + address
+          + "\",\"references\":\"" + references + "\"}"));
+      Assert.assertTrue(references + ": " + merged, merged.contains("java.util.HashMap @ 0x"));
+    }
+    assertToolError("path_to_gc_roots", "{\"address\":\"" + address + "\",\"references\":\"weak\"}",
+        "references must be all, exclude_weak, exclude_soft, exclude_phantom, exclude_weak_soft, "
+            + "exclude_phantom_soft, exclude_phantom_weak or exclude_all");
+    assertToolError("merge_paths_to_gc_roots", "{\"address\":\"" + address + "\",\"references\":\"x\"}",
+        "references must be");
   }
 
   @Test
@@ -335,12 +372,16 @@ public class McpServerTests {
     String roots = okText(callTool("gc_roots", "{\"max_rows\":20}"));
     Assert.assertTrue(roots, roots.startsWith("Class Name | Objects"));
     Assert.assertTrue(roots, roots.contains("System Class"));
-    String incoming = okText(callTool("class_references", "{\"class_regex\":\"java\\\\.util\\\\.HashMap\"}"));
-    Assert.assertTrue(incoming, incoming.startsWith("Class Name | Objects | Shallow Heap"));
-    Assert.assertTrue(incoming, incoming.contains("java.util.HashMap"));
+    String byDefault = okText(callTool("class_references", "{\"class_regex\":\"java\\\\.util\\\\.HashMap\"}"));
+    Assert.assertTrue(byDefault, byDefault.startsWith("Class Name | Objects | Shallow Heap"));
+    Assert.assertTrue(byDefault, byDefault.contains("java.util.HashMap"));
     String outgoing = okText(callTool("class_references", "{\"class_regex\":\"java\\\\.util\\\\.HashMap\","
         + "\"direction\":\"outgoing\"}"));
-    Assert.assertTrue(outgoing, outgoing.contains("java.util.HashMap"));
+    String incoming = okText(callTool("class_references", "{\"class_regex\":\"java\\\\.util\\\\.HashMap\","
+        + "\"direction\":\"incoming\"}"));
+    // like MAT, the default is outgoing; the two directions differ
+    Assert.assertEquals(outgoing, byDefault);
+    Assert.assertNotEquals(outgoing, incoming);
     assertToolError("class_references", "{\"class_regex\":\"a\",\"direction\":\"x\"}", "direction must be");
     assertToolError("class_references", "{}", "Missing argument: class_regex");
   }
@@ -438,6 +479,39 @@ public class McpServerTests {
     // a mistake in the query comes back as text with MAT's explanation
     String broken = okText(callTool("oql", "{\"query\":\"selekt x\"}"));
     Assert.assertTrue(broken, broken.contains("Problem reported"));
+  }
+
+  /** The addresses (0x...) in a text, in order, without duplicates. */
+  private static java.util.Set<String> addressesIn(String text) {
+    java.util.Set<String> addresses = new java.util.TreeSet<>();
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("0x[0-9a-f]+").matcher(text);
+    while (m.find()) {
+      addresses.add(m.group());
+    }
+    return addresses;
+  }
+
+  @Test
+  public void sqlInboundReferencesAgreeWithMat() {
+    String address = biggestHashMap();
+    // MAT's own list of the referrers: the object itself on the first line, its referrers below
+    String[] lines = okText(callTool("list_references", "{\"address\":\"" + address
+        + "\",\"direction\":\"incoming\"}")).split("\n");
+    java.util.Set<String> expected = new java.util.TreeSet<>();
+    for (int i = 2; i < lines.length && lines[i].startsWith("  ") && !lines[i].startsWith("   "); i++) {
+      expected.addAll(addressesIn(lines[i].split("\\|")[0]));
+    }
+    Assert.assertFalse(String.join("\n", lines), expected.isEmpty());
+    String rows = okText(callTool("sql_query", "{\"sql\":\"select getHexAddress(i.this) a from java.util.HashMap m, "
+        + "lateral table(getInboundReferences(m.this)) i where getAddress(m.this) = " + address + "\"}"));
+    Assert.assertEquals(rows, expected, addressesIn(rows));
+    // the referrers of a class object include its instances; null and objects without referrers give no rows
+    String perClass = okText(callTool("sql_query", "{\"sql\":\"select count(*) c from \\\"java.lang.Class\\\" c, "
+        + "lateral table(getInboundReferences(c.this)) i\"}"));
+    Assert.assertFalse(perClass, perClass.contains("| 0 |"));
+    String none = okText(callTool("sql_query", "{\"sql\":\"select count(*) c from "
+        + "lateral table(getInboundReferences(cast(null as any))) i\"}"));
+    Assert.assertTrue(none, none.contains("| 0 |"));
   }
 
   @Test

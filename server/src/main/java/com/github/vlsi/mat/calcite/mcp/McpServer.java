@@ -80,7 +80,7 @@ public class McpServer implements AutoCloseable {
       + "lists a collection; histogram counts objects and memory per class, filtered and sorted; export_query "
       + "writes a full result to CSV. dominator_tree shows what keeps the most memory alive and threads which "
       + "thread holds it; merge_paths_to_gc_roots explains many objects at once (weak, soft and phantom references "
-      + "are ignored unless include_weak_refs is true); gc_roots, class_references, big_drops, reference_statistics, "
+      + "are left out unless references is all, as in MAT's Path To GC Roots menu); gc_roots, class_references, big_drops, reference_statistics, "
       + "collection_stats, group_by_value, find_strings, duplicate_classes, system_properties and oql wrap more of "
       + "MAT. mat_query runs any other MAT command (find_leaks, top_consumers...). Long "
       + "calls stop after timeout_seconds; cancel_query stops the running call. Heap contents (strings, field "
@@ -323,18 +323,19 @@ public class McpServer implements AutoCloseable {
         return ObjectTools.objectInfo(dump(args), requiredString(args, "address"));
       case Tools.REFERENCES:
         return ObjectTools.references(dump(args), requiredString(args, "address"),
-            !"outgoing".equalsIgnoreCase(optionalString(args, "direction")), renderer(args, 1), cancellation);
+            "incoming".equals(MatCommandTools.choice(optionalString(args, "direction"), "direction", "outgoing",
+                "outgoing", "incoming")), renderer(args, 1), cancellation);
       case Tools.RETAINED_SET:
         return ObjectTools.retainedSet(dump(args), requiredString(args, "address"),
             optionalString(args, "excluded_references"), renderer(args, 0), cancellation);
       case Tools.PATH_TO_GC_ROOTS:
         return ObjectTools.pathToGcRoots(dump(args), requiredString(args, "address"),
-            intArg(args, "paths", 3, 1, 100), booleanArg(args, "include_weak_refs"), renderer(args, 30),
+            intArg(args, "paths", 3, 1, 100), optionalString(args, "references"), renderer(args, 30),
             cancellation);
       case Tools.MERGE_PATHS:
         return MatCommandTools.mergePaths(dump(args), optionalString(args, "address"),
             optionalString(args, "class_regex"), optionalString(args, "group_by"),
-            booleanArg(args, "include_weak_refs"), renderer(args, 30), cancellation);
+            optionalString(args, "references"), renderer(args, 30), cancellation);
       case Tools.GC_ROOTS:
         return MatCommandTools.gcRoots(dump(args), renderer(args, 1), cancellation);
       case Tools.CLASS_REFERENCES:

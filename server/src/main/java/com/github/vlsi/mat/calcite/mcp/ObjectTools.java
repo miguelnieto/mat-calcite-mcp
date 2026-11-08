@@ -138,20 +138,23 @@ final class ObjectTools {
   }
 
   /**
-   * @param includeWeakRefs also follow weak, soft, phantom and finalizer references, which MAT ignores by default
+   * @param references which references to leave out, as in MAT's Path To GC Roots menu: all, exclude_weak,
+   *                   exclude_soft, exclude_phantom, exclude_weak_soft, exclude_phantom_soft, exclude_phantom_weak or
+   *                   exclude_all (the default)
    */
-  static String pathToGcRoots(ISnapshot snapshot, String address, int paths, boolean includeWeakRefs,
+  static String pathToGcRoots(ISnapshot snapshot, String address, int paths, String references,
                               MatResultRenderer renderer, Cancellation cancellation) throws Exception {
     int[] ids = objectIds(snapshot, address);
     if (ids.length != 1) {
       throw new ToolException("path_to_gc_roots takes one address, got " + ids.length);
     }
-    String result = run(snapshot, "path2gc -numberOfPaths " + paths + " " + toAddress(snapshot, ids[0])
-        + (includeWeakRefs ? " -excludes" : ""), renderer, cancellation);
-    // MAT shows just the object when no path remains once weak references are ignored; a GC root looks the same
-    return includeWeakRefs || !result.endsWith("\n1 row") ? result : result
-        + "\n\nOnly the object itself: either it is a GC root, or only weak, soft, phantom or finalizer references "
-        + "reach it, which are ignored by default. Retry with include_weak_refs true to see how it is reachable.";
+    String result = run(snapshot, "path2gc -numberOfPaths " + paths + " " + toAddress(snapshot, ids[0]) + " "
+        + MatCommandTools.excludesOption(references), renderer, cancellation);
+    // MAT shows just the object when no path remains once those references are left out; a GC root looks the same
+    return MatCommandTools.followsAllReferences(references) || !result.endsWith("\n1 row") ? result : result
+        + "\n\nOnly the object itself: either it is a GC root, or it is reachable only through references that the "
+        + "references option leaves out (by default weak, soft, phantom and finalizer references). Retry with "
+        + "references all to see how it is reachable.";
   }
 
   /**

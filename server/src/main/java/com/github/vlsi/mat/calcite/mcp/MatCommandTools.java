@@ -21,23 +21,66 @@ final class MatCommandTools {
   private static final Pattern REFERENCE = Pattern.compile("[A-Za-z0-9_.$\\[\\]]+:[A-Za-z0-9_$]+");
   private static final Pattern FIELD = Pattern.compile("[A-Za-z0-9_$.]+");
 
+  // The "Path To GC Roots" menu of Eclipse MAT (Path2GCRootsQuery and MultiplePath2GCRootsQuery): which references
+  // to leave out when looking for paths. The lists are MAT's own, entry by entry.
+  private static final String WEAK = "java.lang.ref.WeakReference:referent "
+      + "java.lang.ref.Finalizer:referent,unfinalized java.lang.Runtime:<Unfinalized>";
+  private static final String SOFT = "java.lang.ref.SoftReference:referent";
+  private static final String PHANTOM = "java.lang.ref.PhantomReference:referent";
+  private static final String ALL_KINDS = "java.lang.ref.Reference:referent java.lang.ref.Finalizer:unfinalized "
+      + "java.lang.Runtime:<Unfinalized>";
+  /** The values of the references option, in the order of MAT's menu, with the -excludes of each. */
+  private static final String[][] REFERENCE_MENU = {
+      {"all", "\"\""}, // with all references
+      {"exclude_weak", WEAK}, // exclude weak references
+      {"exclude_soft", SOFT}, // exclude soft references
+      {"exclude_phantom", PHANTOM}, // exclude phantom references
+      {"exclude_weak_soft", WEAK + " " + SOFT}, // exclude weak/soft references
+      {"exclude_phantom_soft", PHANTOM + " " + SOFT}, // exclude phantom/soft references
+      {"exclude_phantom_weak", PHANTOM + " " + WEAK}, // exclude phantom/weak references
+      {"exclude_all", ALL_KINDS}}; // exclude all phantom/weak/soft etc. references
+
   private MatCommandTools() {
+  }
+
+  /**
+   * The {@code -excludes} option for a value of the references argument, as in MAT's Path To GC Roots menu. The
+   * default is the last entry, which MAT's own default of the command matches.
+   */
+  static String excludesOption(String references) throws ToolException {
+    String[] names = new String[REFERENCE_MENU.length];
+    for (int i = 0; i < names.length; i++) {
+      names[i] = REFERENCE_MENU[i][0];
+    }
+    String wanted = choice(references, "references", "exclude_all", names);
+    for (String[] entry : REFERENCE_MENU) {
+      if (entry[0].equals(wanted)) {
+        return "-excludes " + entry[1];
+      }
+    }
+    throw new IllegalStateException(wanted);
+  }
+
+  /** Whether the references value follows every reference, i.e. leaves nothing out. */
+  static boolean followsAllReferences(String references) {
+    return references != null && "all".equals(references.trim().toLowerCase(Locale.ROOT));
   }
 
   // ---------------------------------------------------------------- why something is alive
 
   /** merge_shortest_paths: the paths from GC roots to many objects, merged into one tree. */
   static String mergePaths(ISnapshot snapshot, String addresses, String classRegex, String groupBy,
-                           boolean includeWeakRefs, MatResultRenderer renderer, Cancellation cancellation)
+                           String references, MatResultRenderer renderer, Cancellation cancellation)
       throws Exception {
     String objects = objects(snapshot, addresses, classRegex);
     String grouping = choice(groupBy, "group_by", "from_gc_roots", "from_gc_roots", "from_gc_roots_by_class",
         "from_objects_by_class").toUpperCase(Locale.ROOT);
-    String result = run(snapshot, "merge_shortest_paths " + objects + " -groupBy " + grouping
-        + (includeWeakRefs ? " -excludes" : ""), renderer, cancellation);
-    return includeWeakRefs || !result.contains("\n0 rows") && !result.startsWith("0 rows") ? result
-        : result + "\n\nNo path from a GC root without weak, soft, phantom and finalizer references: the objects are "
-            + "only weakly reachable, or garbage. Retry with include_weak_refs true.";
+    String result = run(snapshot, "merge_shortest_paths " + objects + " -groupBy " + grouping + " "
+        + excludesOption(references), renderer, cancellation);
+    return followsAllReferences(references) || !result.contains("\n0 rows") && !result.startsWith("0 rows") ? result
+        : result + "\n\nNo path from a GC root with the references left out by references=" + referencesName(references)
+            + ": the objects are only reachable through those references, or are garbage. Retry with references "
+            + "all.";
   }
 
   /** gc_roots: the GC roots by type and the classes under each. */
@@ -48,7 +91,7 @@ final class MatCommandTools {
   /** class_references: who references all instances of the classes, or what they reference, grouped by class. */
   static String classReferences(ISnapshot snapshot, String classRegex, String direction, MatResultRenderer renderer,
                                 Cancellation cancellation) throws Exception {
-    boolean incoming = "incoming".equals(choice(direction, "direction", "incoming", "incoming", "outgoing"));
+    boolean incoming = "incoming".equals(choice(direction, "direction", "outgoing", "outgoing", "incoming"));
     return run(snapshot, "class_references " + classPattern(classRegex, "class_regex") + (incoming ? " -inbound" : ""),
         renderer, cancellation);
   }
@@ -92,6 +135,10 @@ final class MatCommandTools {
   }
 
   // ---------------------------------------------------------------- collections, strings, classes
+
+  private static String referencesName(String references) {
+    return references == null || references.trim().isEmpty() ? "exclude_all" : references.trim();
+  }
 
   /** The distributions of the collection and array commands. */
   static String collectionStats(ISnapshot snapshot, String classRegex, String kind, Integer segments,

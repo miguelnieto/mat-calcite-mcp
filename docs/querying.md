@@ -29,7 +29,7 @@ described are what it did. Object addresses and counts differ in your dump.
 2. Start with `heap_overview`: heap size, the JVM, the biggest objects and the classes using most memory.
 3. Find *what* is big with `histogram`, `dominator_tree`, `threads`, `leak_suspects`, `duplicate_strings` or
    `wasteful_collections`, or with your own `sql_query`.
-4. Find *why* an object is alive with its address: `path_to_gc_roots`, `list_references` (incoming),
+4. Find *why* an object is alive with its address: `path_to_gc_roots`, `list_references` (`direction: incoming`),
    `immediate_dominators`. See what it keeps alive with `retained_set`, and what it holds with `collection_contents`
    or `object_info`.
 
@@ -354,7 +354,7 @@ of a map or the elements of a list, with its capacity, fill ratio and collision 
 ### Duplicate strings
 
 `duplicate_strings` (with `min_copies`) lists values stored many times, the bytes the extra copies waste, and an
-example address. Follow an example with `list_references` (incoming) to find who creates the copies. In SQL:
+example address. Follow an example with `list_references` (`direction: incoming`) to find who creates the copies. In SQL:
 
 ```sql
 select toString(this) s, count(*) copies, sum(shallowSize(this)) shallow
@@ -400,11 +400,11 @@ show trees take `depth`, `max_rows` and `max_children`.
 | `dominator_tree` | `address`, `group_by` (none, class, class_loader, package) | what keeps the most memory alive, or what one object dominates |
 | `threads` | `address`, `include_stacks`, `max_frames` | threads with state and retained heap; details of given threads |
 | `histogram` | `filter`, `sort_by`, `retained`, `group_by` (class, package, superclass, class_loader) | objects and shallow heap per class, or per group |
-| `path_to_gc_roots` | `address`, `paths`, `include_weak_refs` | why one object is alive |
-| `merge_paths_to_gc_roots` | `address` (several) or `class_regex`, `group_by` (from_gc_roots, from_gc_roots_by_class, from_objects_by_class), `include_weak_refs` | why many objects are alive, as one merged tree |
+| `path_to_gc_roots` | `address`, `paths`, `references` | why one object is alive |
+| `merge_paths_to_gc_roots` | `address` (several) or `class_regex`, `group_by` (from_gc_roots, from_gc_roots_by_class, from_objects_by_class), `references` | why many objects are alive, as one merged tree |
 | `retained_set` | `address`, `excluded_references` | what objects keep alive, by class |
 | `gc_roots` | | GC roots by type, with the classes under each |
-| `class_references` | `class_regex`, `direction` (incoming, outgoing) | who references all instances of a class, or what they reference |
+| `class_references` | `class_regex`, `direction` (outgoing, incoming) | what all instances of a class reference, or who references them |
 | `big_drops` | `skip` | accumulation points: objects whose retained heap far exceeds their children's |
 | `unreachable_objects` | | garbage that is still in the dump, per class |
 | `reference_statistics` | `kind` (weak, soft, phantom, finalizer, custom), `class_regex` | what weak, soft, phantom or finalizer references hold |
@@ -414,6 +414,22 @@ show trees take `depth`, `max_rows` and `max_children`.
 | `duplicate_classes` | | classes defined by several class loaders |
 | `system_properties` | `filter` | the `System` properties of the dumped JVM |
 | `oql` | `query` | an OQL query |
+
+### Outgoing and incoming references
+
+`list_references` (objects, by address) and `class_references` (all instances of classes, summed up by class) have
+the two entries of MAT's *List objects* and *Show objects by class* menus. Like MAT, the default is **outgoing**:
+
+| `direction` | MAT's menu entry | Shows |
+|---|---|---|
+| `outgoing` (default) | with / by outgoing references | what the objects reference: their fields, array elements and class |
+| `incoming` | with / by incoming references | who references them, i.e. what keeps them alive |
+
+Use `incoming` for "who holds this". Each referrer is labelled with how it refers to the object: a field name, an array
+index such as `[0]`, or `<Java Local>` for a thread's local variable. `depth` goes further up or down: with
+`direction: incoming` and `depth: 3` the chain runs from the object through its referrers' referrers.
+`class_references` groups each level by class, so the 29 `java.net.URL` objects are one row, with `direction:
+incoming` showing which classes hold them.
 
 ### Regular expressions in these tools
 
@@ -432,11 +448,28 @@ message saying so. MAT matches class names against the **whole** name, not a par
 
 ### Weak, soft and phantom references
 
-By default MAT ignores weak, soft, phantom and finalizer references when it looks for a path from a GC root.
-An object that only such a reference holds therefore has **no path**: `path_to_gc_roots` shows just the object
-itself and `merge_paths_to_gc_roots` shows nothing. A single row can also mean the object is a GC root itself, so
-the tool says so. To see how the object is reachable, call again with `include_weak_refs` set to true: the
-path then runs through the `referent` field of the `SoftReference`, `WeakReference` or other reference.
+A path from a GC root is only meaningful if it uses references that keep the object alive, and weak, soft and
+phantom references do not (a soft reference only until memory runs short). So MAT leaves such references out when it
+looks for paths, and lets you choose which. `path_to_gc_roots` and `merge_paths_to_gc_roots` take `references`, one
+value per entry of MAT's *Path To GC Roots* menu:
+
+| `references` | MAT's menu entry | Leaves out |
+|---|---|---|
+| `all` | with all references | nothing |
+| `exclude_weak` | exclude weak references | `WeakReference.referent`, `Finalizer.referent` and `.unfinalized`, `Runtime.<Unfinalized>` |
+| `exclude_soft` | exclude soft references | `SoftReference.referent` |
+| `exclude_phantom` | exclude phantom references | `PhantomReference.referent` |
+| `exclude_weak_soft` | exclude weak/soft references | the weak and soft lists |
+| `exclude_phantom_soft` | exclude phantom/soft references | the phantom and soft lists |
+| `exclude_phantom_weak` | exclude phantom/weak references | the phantom and weak lists |
+| `exclude_all` (default) | exclude all phantom/weak/soft etc. references | `Reference.referent` (every kind of reference, including your own subclasses), `Finalizer.unfinalized`, `Runtime.<Unfinalized>` |
+
+An object that only a left-out reference holds has **no path**: with the default, `path_to_gc_roots` shows just the
+object itself and `merge_paths_to_gc_roots` shows nothing. A single row can also mean the object is a GC root
+itself, so the tool says so. Call again with `references: all` to see how it is reachable: the path then runs
+through the `referent` field of the reference. With a softly held object, for example, the paths follow the
+`SoftReference` for `all`, `exclude_weak`, `exclude_phantom` and `exclude_phantom_weak`, and show none for the four
+options that exclude soft references.
 
 `reference_statistics` answers the question from the other side: which objects do the references hold, which of
 those are held **only** by references (the memory a cache gives back under pressure), and which are also held

@@ -14,9 +14,14 @@
   `system_properties` and `oql`. The values that go into a MAT command line are validated, so a space, a quote or a
   leading dash cannot add an option such as a file to write.
 - `histogram` takes `group_by` (class, package, superclass, class_loader); `path_to_gc_roots` takes
-  `include_weak_refs`, and says when only weak, soft, phantom or finalizer references reach an object;
+  `references`, the choices of MAT's Path To GC Roots menu (all, exclude_weak, exclude_soft, exclude_phantom,
+  exclude_weak_soft, exclude_phantom_soft, exclude_phantom_weak, exclude_all), and says when only references that
+  are left out reach an object;
   `retained_set` takes `excluded_references` (MAT's customized retained set, without opening its file option to
   `mat_query`).
+- **Changed:** `list_references` now defaults to `direction` outgoing, as in MAT (List objects > with outgoing
+  references), where 0.1.0 defaulted to incoming. Pass `direction` incoming for the referrers. `class_references`
+  follows the same default, and a `direction` other than outgoing or incoming is now an error.
 - SQL: table function `getDominatedObjects(x)`, and `isGcRoot(x)` and `getGcRootTypes(x)`.
 - `mat_query` now shows MAT's report results as text instead of a placeholder: `thread_details`, `leakhunter`,
   `finalizer_overview` and the weak, soft, phantom and finalizer reference statistics. Charts are left out, HTML is

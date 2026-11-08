@@ -61,6 +61,12 @@ final class Tools {
       DUPLICATE_CLASSES, SYSTEM_PROPERTIES, OQL, MAT_QUERY, HEAP_OVERVIEW, LEAK_SUSPECTS, COMPARE_DUMPS,
       COLLECTION_CONTENTS, EXPORT_QUERY, DUPLICATE_STRINGS, WASTEFUL_COLLECTIONS, HISTOGRAM);
 
+  /** MAT's Path To GC Roots menu, as the references option of the two path tools. */
+  private static final Map.Entry<String, Object> REFERENCES_OPTION = prop("references", "string", "Which references to leave "
+      + "out of the paths, as in MAT's menu: all (with all references), exclude_weak, exclude_soft, exclude_phantom, "
+      + "exclude_weak_soft, exclude_phantom_soft, exclude_phantom_weak, or exclude_all (default: exclude all "
+      + "phantom/weak/soft etc. references)");
+
   private static final String ADDRESS_ONE = "Object address as shown in results, e.g. 0x7bfeb5848";
   private static final String ADDRESSES = "One or more object addresses, separated by spaces or commas, e.g. "
       + "0x7bfeb5848";
@@ -108,11 +114,11 @@ final class Tools {
             + "dominator, and its field values (static fields for a class, elements for an array).",
         properties(prop("dump", "string", DUMP_DESCRIPTION), prop("address", "string", ADDRESS_ONE),
             timeout()), "address"));
-    tools.add(tool(REFERENCES, "Objects that reference the given objects (direction incoming: who keeps them, "
-            + "their parents) or that they reference (direction outgoing). Like MAT's List objects > with incoming / "
-            + "outgoing references.",
+    tools.add(tool(REFERENCES, "Objects that the given objects reference (direction outgoing, the default) or that "
+            + "reference them (direction incoming: who keeps them alive, their parents). Like MAT's List objects > with "
+            + "outgoing / incoming references.",
         properties(prop("dump", "string", DUMP_DESCRIPTION), prop("address", "string", ADDRESSES),
-            prop("direction", "string", "incoming (default) or outgoing"),
+            prop("direction", "string", "outgoing (default) or incoming"),
             prop("depth", "integer", "Levels of references to follow (default 1)"), maxRows(), maxChildren(),
             timeout()), "address"));
     tools.add(tool(RETAINED_SET, "What the given objects keep alive: the objects that would be freed with them, as "
@@ -125,12 +131,12 @@ final class Tools {
             maxRows(),
             timeout()), "address"));
     tools.add(tool(PATH_TO_GC_ROOTS, "Why an object is alive: the shortest reference paths from GC roots to it, as a "
-            + "tree (by default weak, soft, phantom and finalizer references are not followed: an object that only "
-            + "they reach shows no path). The key tool for memory leaks.",
+            + "tree. Like MAT's Path To GC Roots menu, the references option decides which references are left out; "
+            + "by default weak, soft, phantom and finalizer references, so an object that only they reach shows no "
+            + "path. The key tool for memory leaks.",
         properties(prop("dump", "string", DUMP_DESCRIPTION), prop("address", "string", ADDRESS_ONE),
             prop("paths", "integer", "Number of paths (default 3)"),
-            prop("include_weak_refs", "boolean", "Also follow weak, soft, phantom and finalizer references "
-                + "(default false)"),
+            REFERENCES_OPTION,
             prop("depth", "integer", "Tree levels to show (default 30)"), maxRows(), maxChildren(), timeout()),
         "address"));
     tools.add(tool(IMMEDIATE_DOMINATORS, "The objects that directly dominate (keep alive) the given objects, grouped "
@@ -168,20 +174,19 @@ final class Tools {
             prop("group_by", "string", "from_gc_roots (default: the tree starts at the GC roots), "
                 + "from_gc_roots_by_class (the roots' classes first) or from_objects_by_class (the objects' classes "
                 + "first)"),
-            prop("include_weak_refs", "boolean", "Also follow weak, soft, phantom and finalizer references "
-                + "(default false)"),
+            REFERENCES_OPTION,
             prop("depth", "integer", "Tree levels to show (default 30)"), maxRows(), maxChildren(), timeout())));
     tools.add(tool(GC_ROOTS, "The GC roots of the heap by type (system class, JNI global, thread block, Java local...) "
             + "with the classes of the objects under each.",
         properties(prop("dump", "string", DUMP_DESCRIPTION),
             prop("depth", "integer", "Tree levels to show (default 1)"), maxRows(), maxChildren(), timeout())));
-    tools.add(tool(CLASS_REFERENCES, "Who references the instances of the matching classes (incoming) or what they "
-            + "reference (outgoing), summed up by class: for example which classes hold the 29 URLs. For one object "
-            + "use list_references.",
+    tools.add(tool(CLASS_REFERENCES, "What the instances of the matching classes reference (outgoing, the default) or "
+            + "who references them (incoming), summed up by class: with incoming, for example which classes hold the "
+            + "29 URLs. For single objects use list_references.",
         properties(prop("dump", "string", DUMP_DESCRIPTION),
             prop("class_regex", "string", "Regular expression for the whole class name, e.g. java\\.net\\.URL; no "
                 + "spaces"),
-            prop("direction", "string", "incoming (default) or outgoing"),
+            prop("direction", "string", "outgoing (default) or incoming"),
             prop("depth", "integer", "Tree levels to show (default 1)"), maxRows(), maxChildren(), timeout()),
         "class_regex"));
     tools.add(tool(BIG_DROPS, "Where the memory piles up: objects whose retained heap is much larger than the sum "
