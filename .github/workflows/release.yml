@@ -83,6 +83,8 @@ jobs:
               --pids-limit 256 --memory 2g \
               --user 12345:12345 -v "$PWD/smoke:/dumps" "$IMAGE:$VERSION" > out.jsonl
           cat out.jsonl
+          # The image runs as a non-root user by default, without --user
+          test "$(docker run --rm --entrypoint id "$IMAGE:$VERSION" -u)" != 0
           test "$(wc -l < out.jsonl)" -eq 3
           grep -q "\"version\":\"$VERSION\." out.jsonl
           grep -q 'objects: 15540' out.jsonl

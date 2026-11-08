@@ -50,8 +50,10 @@ a list. A JSON file has no shell, so write your user and group ids in place of `
 
 - **Heap:** MAT needs about as much heap as the dump's size. With the jar, set `-Xmx`. With Docker, the heap is
   75% of the container's memory limit (`--memory 8g`), or set `-e JAVA_TOOL_OPTIONS=-Xmx4g`.
-- **Dumps in Docker:** the assistant opens them as `/dumps/<file>.hprof`. The folder must be writable, since MAT
-  writes its index files there; `--user` makes them yours rather than root's.
+- **Dumps in Docker:** the assistant opens them as `/dumps/<file>.hprof`. The folder must be writable for the user the
+  container runs as, since MAT writes its index files there. That user is not root: it is uid 1000 by default, which is
+  you on most Linux systems, and `--user "$(id -u):$(id -g)"` runs it as you on any system, so the files are yours. If
+  the folder is not writable for it, opening a dump fails with `AccessDeniedException ... .lock.index`.
 - **No network:** the server needs none, so `--network none` costs nothing; see [Run it locked down](#run-it-locked-down).
 
 ### Run it locked down
@@ -76,7 +78,7 @@ together, and the tools (SQL, the overview, leak suspects, CSV export) run uncha
 | `--read-only --tmpfs /tmp` | the container's filesystem cannot be written; MAT's workspace lives in memory in `/tmp`. Without the tmpfs the container does not start |
 | `--cap-drop ALL`, `--security-opt no-new-privileges` | no Linux capabilities, and no way to gain privileges |
 | `--pids-limit`, `--memory` | bound the processes and the memory (the JVM heap is 75% of `--memory`) |
-| `--user` | files written next to your dumps are yours, and the process is not root |
+| `--user` | runs as your user, so the files written next to your dumps are yours. The default is uid 1000, never root |
 
 The only place the container writes besides `/tmp` is the dumps folder: MAT's index files and CSV exports. That folder
 can be mounted read-only (`-v /path/to/dumps:/dumps:ro`) once a dump has been opened once with a writable mount, so

@@ -17,6 +17,10 @@
   unused slots, so an empty `new ArrayList<>(100)` showed 840 bytes of waste instead of 440. The "unused slots" column
   now covers only the collections that are not empty, and the single-collection list says how many slots an empty
   one has allocated.
+- **Changed:** the container image no longer runs as root. It runs as uid 1000 (gid 1000), the first user of most Linux
+  systems, and `--user` still overrides it. A dumps folder that you own with uid 1000 is writable out of the box, and
+  the index files MAT writes there are yours. If the folder is not writable for uid 1000, pass `--user` with your own
+  ids, or make the folder writable; before, root could write to any folder.
 - The Docker examples run with `--network none`, as a JSON client configuration does too, and the README has a "Run it
   locked down" section with a read-only filesystem, no capabilities and resource limits, tested together with the
   tools. The server needs no network. The release workflow now smoke-tests the published image locked down, so a
